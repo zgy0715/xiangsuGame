@@ -65,3 +65,55 @@ app/src/main/java/com/example/xiangsugame/
 - **提示推导**（`PuzzleGenerator`）：`clue[r][c]` = 以 (r,c) 为中心的 3×3 窗口内涂黑格数量，越界部分不计。
 - **唯一解校验**（`PuzzleSolver`）：回溯 + 约束传播。先用"必涂/必空"规则推导收敛解空间，推不动时再分支猜测；关卡生成后必须通过"解唯一"校验。
 - **确定性矛盾检测**（`Validator`）：对每个提示格统计窗口内 `已涂黑` 与 `未知`，当 `已涂黑 > 线索` 或 `已涂黑 + 未知 < 线索` 时判定该窗口必错。
+
+## 🛠️ 构建与运行
+
+### 环境要求
+
+| 依赖 | 版本 |
+|------|------|
+| JDK | 21+（AGP 9.x 强制要求） |
+| Android SDK | compileSdk 36 |
+| Gradle | 项目自带 Gradle Wrapper |
+| Android Studio | 最新稳定版 |
+
+### 运行步骤
+
+1. 使用 Android Studio 打开项目根目录；
+2. 等待 Gradle 同步完成（首次会自动下载依赖）；
+3. 连接设备或启动模拟器，点击 Run ▶️。
+
+### 命令行构建
+
+```bash
+# 运行单元测试
+./gradlew testDebugUnitTest
+
+# 构建 Debug APK
+./gradlew assembleDebug
+```
+
+> 若出现 "Unable to download toolchain" 错误，请先安装 JDK 21，并在 Android Studio 中将 Gradle JDK 设置为 JDK 21。
+
+## 🧪 测试
+
+核心逻辑单元测试位于 `app/src/test/java/com/example/xiangsugame/model/CoreLogicTest.kt`，纯 JVM 运行，覆盖：
+
+1. 关卡唯一解 —— 每个内置关卡必须只有一个解且与答案一致
+2. 提示推导 —— 3×3 窗口计数规则
+3. 三态循环切换 —— 空白 → 涂黑 → 标记空白 → 空白
+4. 胜利判定 —— 与答案逐格比对
+5. 确定性矛盾检测 —— 含"中间态不误报"
+6. 撤销 / 重做 —— 指令栈语义
+
+## 🚧 后续规划
+
+- [ ] 引入 Jetpack Navigation 组件替代状态切换导航
+- [ ] 棋盘双指缩放 / 平移（大尺寸关卡更易操作）
+- [ ] "提示功能"：基于求解器推导确定格
+- [ ] 随机谜面生成与更多关卡
+- [ ] 自定义关卡编辑与导入
+
+## 📄 许可
+
+项目仅供学习交流使用，暂无开源许可。
