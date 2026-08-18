@@ -36,3 +36,32 @@ Fill-a-Pix（像素填空）是一种经典逻辑谜题：棋盘上的每个数�
 
 > 提示：解谜过程中多数中间状态天然不满足全部数字约束（因为还没画完），
 > 因此错误提示采用"确定性矛盾检测"——只报告无论怎么补救都注定错误的格子，避免干扰正常推理。
+
+## 🏗️ 项目架构
+
+项目采用**模型-视图分层**，逻辑与界面完全解耦：
+
+```
+app/src/main/java/com/example/xiangsugame/
+├── MainActivity.kt          # 应用入口 + 页面导航（首页 ⇄ 游戏页）
+├── GameProgress.kt          # 关卡进度（SharedPreferences 持久化 + 顺序解锁）
+├── model/                   # 核心逻辑层（纯 Kotlin，无 UI 依赖）
+│   ├── CellState.kt         # 方格三态枚举（未确定/涂黑/标记空白）
+│   ├── Level.kt             # 关卡数据（提示矩阵 + 答案矩阵）
+│   ├── GameBoard.kt         # 棋盘状态容器 + 撤销/重做指令栈
+│   ├── PuzzleGenerator.kt   # 由答案像素图自动推导提示数字
+│   ├── PuzzleSolver.kt      # 回溯 + 约束传播求解器（校验谜面唯一解）
+│   ├── Validator.kt         # 确定性矛盾检测 + 胜利判定
+│   └── Levels.kt            # 内置六关关卡（大尺寸用程序化作画）
+└── ui/                      # 界面层（Jetpack Compose）
+    ├── HomeScreen.kt        # 首页关卡网格（第 N 关 / 锁定 / 通关状态）
+    ├── GameScreen.kt        # 游戏页（计时、撤销重做、结算弹窗）
+    ├── BoardView.kt         # Canvas 棋盘渲染 + 手势交互
+    └── theme/               # Material 3 主题
+```
+
+### 核心算法
+
+- **提示推导**（`PuzzleGenerator`）：`clue[r][c]` = 以 (r,c) 为中心的 3×3 窗口内涂黑格数量，越界部分不计。
+- **唯一解校验**（`PuzzleSolver`）：回溯 + 约束传播。先用"必涂/必空"规则推导收敛解空间，推不动时再分支猜测；关卡生成后必须通过"解唯一"校验。
+- **确定性矛盾检测**（`Validator`）：对每个提示格统计窗口内 `已涂黑` 与 `未知`，当 `已涂黑 > 线索` 或 `已涂黑 + 未知 < 线索` 时判定该窗口必错。
