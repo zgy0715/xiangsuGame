@@ -14,7 +14,7 @@ import org.junit.Test
  *   2. 提示推导（PuzzleGenerator）—— 3×3 窗口计数规则；
  *   3. 状态循环（CellState）—— 三态点击循环；
  *   4. 胜利判定（Validator）—— 与答案逐格比对；
- *   5. 确定性矛盾检测（Validator）—— 只报"必错"，不误报中间态；
+ *   5. 精确错误检测（Validator）—— 按答案逐格比对，只报"画错的格子"；
  *   6. 撤销/重做（GameBoard）—— 指令栈语义。
  */
 class CoreLogicTest {
@@ -104,28 +104,74 @@ class CoreLogicTest {
         assertFalse(validator.isSolved(board))
     }
 
-    // ———— 5. 确定性矛盾检测 ————
+    // ———— 5. 精确错误检测（按答案逐格比对）————
 
     @Test
-    fun `overfilled clue is a contradiction`() {
-        // (0,0) 线索为 0，把其窗口内的 (0,1) 涂黑 → filled(1) > clue(0)，必报
+    fun `filled cell that should be blank is flagged exactly`() {
+        // (0,1) 答案应为空白，玩家却涂黑 → 精确标出 (0,1) 一格，不误伤同窗其它格
         val level = sparseCenterLevel()
         val validator = Validator(level)
         val gameBoard = GameBoard(level.rows, level.cols)
         gameBoard.setCell(0, 1, CellState.FILLED)
-        val contradictions = validator.contradictionCells(gameBoard.board)
-        assertTrue("窗口涂黑数超过线索应被判定为矛盾", contradictions.isNotEmpty())
+        val wrong = validator.wrongCells(gameBoard.board)
+        assertTrue("错涂的格子应被标出", (0 to 1) in wrong)
+        assertEquals("只标出真正画错的那一格", setOf(0 to 1), wrong)
     }
 
     @Test
-    fun `intermediate valid state is not a contradiction`() {
-        // 涂中心答案格 (2,2)：不在任何线索 0 的窗口内，属于正常中间态，不报错
+    fun `correct fill is not flagged`() {
+        // 涂中心答案格 (2,2)：与答案一致，属于正常推进，不报错
         val level = sparseCenterLevel()
         val validator = Validator(level)
         val gameBoard = GameBoard(level.rows, level.cols)
         gameBoard.setCell(2, 2, CellState.FILLED)
-        val contradictions = validator.contradictionCells(gameBoard.board)
-        assertFalse("推进答案的中间态不应报错", contradictions.isNotEmpty())
+        val wrong = validator.wrongCells(gameBoard.board)
+        assertTrue("与答案一致不应报错", wrong.isEmpty())
+    }
+
+    @Test
+    fun `marked-empty cell that should be filled is flagged`() {
+        // (2,2) 答案应涂黑，玩家却标记空白 → 标出该格
+        val level = sparseCenterLevel()
+        val validator = Validator(level)
+        val gameBoard = GameBoard(level.rows, level.cols)
+        gameBoard.setCell(2, 2, CellState.MARKED_EMPTY)
+        val wrong = validator.wrongCells(gameBoard.board)
+        assertTrue("错标的空白格应被标出", (2 to 2) in wrong)
+    }
+
+    @Test
+    fun `undecided cells are never flagged`() {
+        // 完全空盘（全是未决定）没有任何错误
+        val level = sparseCenterLevel()
+        val validator = Validator(level)
+        val wrong = validator.wrongCells(GameBoard(level.rows, level.cols).board)
+        assertTrue("未决定的格子不算错", wrong.isEmpty())
+    }
+
+    // ———— 5.1 已满足提示检测 ————
+
+    @Test
+    fun `fully determined zero window is a satisfied clue`() {
+        // (0,0) 提示值为 0：把其窗口内 4 格都标为空白后，窗口已确定且涂黑数=0 → 提示满足
+        val level = sparseCenterLevel()
+        val validator = Validator(level)
+        val gameBoard = GameBoard(level.rows, level.cols)
+        gameBoard.setCell(0, 0, CellState.MARKED_EMPTY)
+        gameBoard.setCell(0, 1, CellState.MARKED_EMPTY)
+        gameBoard.setCell(1, 0, CellState.MARKED_EMPTY)
+        gameBoard.setCell(1, 1, CellState.MARKED_EMPTY)
+        val satisfied = validator.satisfiedClues(gameBoard.board)
+        assertTrue("窗口已确定且数量达标的提示应被标记为满足", (0 to 0) in satisfied)
+    }
+
+    @Test
+    fun `undetermined clue window is not satisfied`() {
+        // 空盘：没有任何窗口已确定 → 没有已满足的提示
+        val level = sparseCenterLevel()
+        val validator = Validator(level)
+        val satisfied = validator.satisfiedClues(GameBoard(level.rows, level.cols).board)
+        assertTrue("空盘不应有已满足的提示", satisfied.isEmpty())
     }
 
     // ———— 6. 撤销 / 重做 ————

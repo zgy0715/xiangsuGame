@@ -5,7 +5,7 @@ package com.example.xiangsugame.model
  *
  * 职责：
  *  - 保存当前棋盘上每个格子的三态状态（以 Int 存储，见 [CellState]）；
- *  - 提供对单个格子的状态修改入口（点击循环切换 / 直接设置）；
+ *  - 提供对单个格子的状态修改入口（点击循环切换 / 直接设置 / 一键补齐）；
  *  - 用两条指令栈（undoStack / redoStack）实现标准撤销/重做语义。
  *
  * 数据布局：board[r][c] 存储第 r 行第 c 列格子的 [CellState.value]。
@@ -17,6 +17,8 @@ package com.example.xiangsugame.model
  *  撤销时弹出栈顶 Move 并回退到改前值，同时把该 Move 压入重做栈；
  *  产生任何"新操作"时清空重做栈 —— 这是标准做法，因为历史被新操作分叉后，
  *  旧的重做分支就失效了。
+ *  Move 分两种：Single 记录单个格子变化；Batch 记录一批格子同时变化
+ *  （"一键补齐"把整盘改动压成一个批，实现一步撤销）。
  */
 class GameBoard(val rows: Int, val cols: Int) {
 
@@ -24,7 +26,13 @@ class GameBoard(val rows: Int, val cols: Int) {
     val board = Array(rows) { IntArray(cols) { CellState.UNDECIDED.value } }
 
     /** 一次状态修改的记录，供撤销/重做回放使用。 */
-    data class Move(val row: Int, val col: Int, val before: Int, val after: Int)
+    sealed interface Move {
+        /** 单个格子的状态变化。 */
+        data class Single(val row: Int, val col: Int, val before: Int, val after: Int) : Move
+
+        /** 一批格子同时变化（一键补齐），整批作为一个可撤销步骤。 */
+        data class Batch(val moves: List<Single>) : Move
+    }
 
     private val undoStack = ArrayDeque<Move>()
     private val redoStack = ArrayDeque<Move>()
@@ -49,7 +57,7 @@ class GameBoard(val rows: Int, val cols: Int) {
         if (after == before) return false
         board[row][col] = after
         // 记录改动并压栈；新操作会切断重做历史
-        undoStack.addLast(Move(row, col, before, after))
+        undoStack.addLast(Move.Single(row, col, before, after))
         redoStack.clear()
         return true
     }
@@ -59,22 +67,53 @@ class GameBoard(val rows: Int, val cols: Int) {
         val before = board[row][col]
         if (before == state.value) return // 目标状态与当前一致，视为无操作
         board[row][col] = state.value
-        undoStack.addLast(Move(row, col, before, state.value))
+        undoStack.addLast(Move.Single(row, col, before, state.value))
         redoStack.clear()
     }
 
-    /** 撤销一步：回退最近一次修改，并把它转入重做栈。返回是否成功撤销。 */
+    /**
+     * 一键补齐：把整盘改成与答案完全一致 —— 答案需要涂黑的格子补成涂黑，
+     * 其余格子清回未确定（同时清掉错涂）。整批改动压成一个 Batch，可一步撤销。
+     *
+     * @return 是否真的产生了变化（棋盘已与答案一致时返回 false）
+     */
+    fun applySolution(answer: Array<IntArray>): Boolean {
+        val moves = mutableListOf<Move.Single>()
+        for (r in 0 until rows) {
+            for (c in 0 until cols) {
+                val target =
+                    if (answer[r][c] == 1) CellState.FILLED.value else CellState.UNDECIDED.value
+                val before = board[r][c]
+                if (before != target) {
+                    board[r][c] = target
+                    moves.add(Move.Single(r, c, before, target))
+                }
+            }
+        }
+        if (moves.isEmpty()) return false
+        undoStack.addLast(Move.Batch(moves))
+        redoStack.clear()
+        return true
+    }
+
+    /** 撤销一步：回退最近一次修改（单格或整批），并把它转入重做栈。返回是否成功撤销。 */
     fun undo(): Boolean {
         val move = undoStack.removeLastOrNull() ?: return false
-        board[move.row][move.col] = move.before
+        when (move) {
+            is Move.Single -> board[move.row][move.col] = move.before
+            is Move.Batch -> for (m in move.moves) board[m.row][m.col] = m.before
+        }
         redoStack.addLast(move)
         return true
     }
 
-    /** 重做一步：重放最近一次被撤销的修改，并把它转回撤销栈。返回是否成功重做。 */
+    /** 重做一步：重放最近一次被撤销的修改（单格或整批），并把它转回撤销栈。返回是否成功重做。 */
     fun redo(): Boolean {
         val move = redoStack.removeLastOrNull() ?: return false
-        board[move.row][move.col] = move.after
+        when (move) {
+            is Move.Single -> board[move.row][move.col] = move.after
+            is Move.Batch -> for (m in move.moves) board[m.row][m.col] = m.after
+        }
         undoStack.addLast(move)
         return true
     }

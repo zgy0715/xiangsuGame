@@ -31,11 +31,25 @@ class PuzzleSolver(
     private val clues: Array<IntArray>,
     /** 最多求多少个解。校验唯一解时传 2 —— 找到第二个即可提前停止。 */
     private val maxSolutions: Int = 2,
+    /**
+     * 求解时间上限（毫秒）；传 0 表示不限时。限时场景（如一次性稀疏提示生成、
+     * 超大棋盘交互校验）中，超时后 dfs 提前中止，结果可能不完整，
+     * 调用方应通过 [timedOut] 判断 —— 超时的结果不能作为"无解 / 唯一解"的判定依据。
+     */
+    private val timeLimitMillis: Long = 0,
 ) {
     private val rows = clues.size
     private val cols = clues[0].size
     /** 当前搜索路径上的棋盘状态，初始全为未知 (-1)。 */
     private val board = Array(rows) { IntArray(cols) { -1 } }
+
+    /** 搜索截止时刻（纳秒）；不限时为 Long.MAX_VALUE（永不触发）。 */
+    private val deadlineNanos: Long =
+        if (timeLimitMillis > 0) System.nanoTime() + timeLimitMillis * 1_000_000L else Long.MAX_VALUE
+
+    /** 是否因超过时间上限而提前中止（此时 [solveAll] 结果不完整）。 */
+    var timedOut: Boolean = false
+        private set
 
     /** 求出至多 maxSolutions 个满足全部线索的完整解。 */
     fun solveAll(): List<Array<IntArray>> {
@@ -56,6 +70,11 @@ class PuzzleSolver(
     private fun dfs(solutions: MutableList<Array<IntArray>>) {
         // 剪枝：解已经够了就不再深入（这是"至多 maxSolutions"的关键）
         if (solutions.size >= maxSolutions) return
+        // 限时剪枝：超时则标记并中止本分支（向上逐层返回，结果不完整）
+        if (System.nanoTime() > deadlineNanos) {
+            timedOut = true
+            return
+        }
 
         // propagated 记录本层约束传播新确定的格子，回溯时要还原成 -1
         val propagated = mutableListOf<Pair<Int, Int>>()

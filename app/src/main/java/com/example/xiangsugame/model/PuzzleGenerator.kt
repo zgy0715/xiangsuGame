@@ -19,18 +19,32 @@ package com.example.xiangsugame.model
 object PuzzleGenerator {
 
     /**
-     * 由答案像素矩阵生成提示数字矩阵。
+     * 由答案像素矩阵生成"全格提示"矩阵（每个格子都有数字）。
      *
      * @param answer 答案像素矩阵，answer[r][c] = 1 表示该格涂黑、0 表示空白。
      * @return 与 answer 同尺寸的提示矩阵；clue[r][c] 为 0..9 的涂黑计数。
      */
-    fun cluesFromAnswer(answer: Array<IntArray>): Array<IntArray> {
+    fun cluesFromAnswer(answer: Array<IntArray>): Array<IntArray> = cluesFromAnswer(answer, null)
+
+    /**
+     * 由答案像素矩阵生成提示矩阵，只在指定位置放置数字。
+     *
+     * 提示值仍是"该格 3×3 窗口内涂黑格数量"，但只有 positions 里的格子
+     * 会显示数字，其余位置为 -1（无提示）。这就是稀疏提示 ——
+     * 棋盘更清爽，推理更考验逻辑，而不只是照数字填格子。
+     *
+     * @param answer 答案像素矩阵。
+     * @param positions 需要显示提示的格子集合；null 表示全格提示。
+     * @return 与 answer 同尺寸的提示矩阵；无提示处为 -1。
+     */
+    fun cluesFromAnswer(answer: Array<IntArray>, positions: Set<Pair<Int, Int>>?): Array<IntArray> {
         val rows = answer.size
         val cols = answer[0].size
-        // 初始化为 -1（表示"无提示"），随后每个格子都会被填充为实际计数
+        // 初始化为 -1（表示"无提示"），随后仅在指定位置填充实际计数
         val clues = Array(rows) { IntArray(cols) { -1 } }
         for (r in 0 until rows) {
             for (c in 0 until cols) {
+                if (positions != null && (r to c) !in positions) continue
                 var count = 0
                 // 遍历以 (r,c) 为中心的 3×3 窗口（dr, dc 取 -1/0/1）
                 for (dr in -1..1) {

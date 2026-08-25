@@ -1,13 +1,13 @@
 package com.example.xiangsugame.model
 
 /**
- * 难度分级。当前仅用于关卡卡片展示，后续可按难度过滤关卡列表。
+ * 难度分级。label 用于展示，stars 用于关卡卡片上的星级（★ 个数）。
  * 基础逻辑（简单/中等）与高级逻辑（困难）的划分源自玩法设计。
  */
-enum class Difficulty(val label: String) {
-    EASY("简单"),
-    MEDIUM("中等"),
-    HARD("困难"),
+enum class Difficulty(val label: String, val stars: Int) {
+    EASY("简单", 1),
+    MEDIUM("中等", 2),
+    HARD("困难", 3),
 }
 
 /**
@@ -30,6 +30,10 @@ data class Level(
     val cols: Int,
     val clueGrid: Array<IntArray>,
     val answerGrid: Array<IntArray>,
+    /** 是否隐藏关（64×64 超大尺寸压轴关）：玩家需通关全部常规关才解锁，管理员可直接开启。 */
+    val isHidden: Boolean = false,
+    /** 限时挑战模式下的时限（秒）；null 表示不在限时模式使用该关（正常按难度给默认值）。 */
+    val timedLimitSeconds: Int? = null,
 ) {
     init {
         require(rows > 0 && cols > 0) { "棋盘尺寸必须大于 0" }
@@ -44,14 +48,19 @@ data class Level(
          * 这是 Demo 关卡的标准构造方式 —— 设计者只需画出像素画（answer），
          * 提示数字由生成器自动算出来。相比手写提示，既省事又保证一致性。
          *
-         * 关卡难度由数据的提示密度/推理深度决定；本 Demo 先统一生成全量提示，
-         * 所以当前三关的难度标签更多是"名义难度"。
+         * @param cluePositions 需要放置提示数字的格子集合。
+         *   - null：全格提示（每个格子都有数字，简单但棋盘很"满"）；
+         *   - 指定集合：只在这些位置显示提示（棋盘清爽、推理有难度），
+         *     集合一般由"贪心去提示 + 唯一解校验"管线生成，保证谜面有唯一解。
          */
         fun fromAnswer(
             id: Int,
             name: String,
             difficulty: Difficulty,
             answer: Array<IntArray>,
+            cluePositions: Set<Pair<Int, Int>>? = null,
+            isHidden: Boolean = false,
+            timedLimitSeconds: Int? = null,
         ): Level {
             val rows = answer.size
             val cols = answer[0].size
@@ -61,8 +70,14 @@ data class Level(
                 difficulty = difficulty,
                 rows = rows,
                 cols = cols,
-                clueGrid = PuzzleGenerator.cluesFromAnswer(answer),
+                clueGrid = if (cluePositions == null) {
+                    PuzzleGenerator.cluesFromAnswer(answer)
+                } else {
+                    PuzzleGenerator.cluesFromAnswer(answer, cluePositions)
+                },
                 answerGrid = answer,
+                isHidden = isHidden,
+                timedLimitSeconds = timedLimitSeconds,
             )
         }
     }

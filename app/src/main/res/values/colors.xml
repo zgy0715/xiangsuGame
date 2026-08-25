@@ -7,4 +7,6 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <!-- 游戏启动背景（淡薰衣草白，与 Compose 主题背景一致），避免冷启动白屏闪烁 -->
+    <color name="window_background">#FFF7F5FF</color>
 </resources>
