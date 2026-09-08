@@ -12,7 +12,6 @@
 | `gen_clues.py` | 从图案答案出发，贪心去提示 + 唯一解校验，生成稀疏提示的 Kotlin 代码 |
 | `verify_clues.py` | 解析 `SparseClues.kt`，逐个关卡校验提示集是否仍唯一解 |
 | `update_clues.py` | 把 `gen_clues.py` 输出的提示集安全写回 `SparseClues.kt` |
-| `design_candidates.py` / `refine.py` | 历史探索脚本（候选图案对比），保留作参考 |
 
 ## 修改图案后的标准流程
 

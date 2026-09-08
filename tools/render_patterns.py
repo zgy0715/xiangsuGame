@@ -79,16 +79,14 @@ def point_in_polygon(x, y, poly):
     return inside
 
 def star20():
-    g = new_grid(20, 20)
-    cx, cy, outer = 9.5, 9.5, 9.5
-    inner = outer * 0.36
-    outer_verts = star_vertices(cx, cy, outer, inner)
-    inner_verts = star_vertices(cx, cy, outer * 0.55, outer * 0.55 * 0.36)
-    for r in range(20):
-        for c in range(20):
-            if point_in_polygon(c + 0.5, r + 0.5, outer_verts) and not point_in_polygon(c + 0.5, r + 0.5, inner_verts):
-                g[r][c] = 1
-    return g
+    return art(
+        "....................", ".........XX.........", "........XXXX........",
+        "........XXXX........", ".......XXXXXX.......", "......XXXXXXXX......",
+        ".....XXXXXXXXXX.....", "..XXXXXXX..XXXXXXX..", "..XXXXXXX..XXXXXXX..",
+        "..XXXXXXX..XXXXXXX..", "...XXXXXX..XXXXXX...", "....XXXXX..XXXXX....",
+        "....XXXX....XXXX....", "....XXXXXXXXXXXX....", ".....XXXXXXXXXX.....",
+        ".....XXX....XXX.....", "......XX....XX......", "......XX....XX......",
+        ".......XX..XX.......", "....................")
 
 def crown20():
     g = new_grid(20, 20)
@@ -106,10 +104,7 @@ def crown20():
 def moon24():
     g = new_grid(24, 24)
     fill_ellipse(g, 12, 12, 10, 10)
-    carve_ellipse(g, 17, 11, 7, 7)
-    carve_diamond(g, 8, 5)
-    carve_diamond(g, 11, 8)
-    carve_diamond(g, 9, 13)
+    carve_ellipse(g, 16, 12, 7.5, 7.5)
     return g
 
 def rocket28():
@@ -120,34 +115,6 @@ def rocket28():
     fill_triangle(g, 19, 9, 24, 4, 10)
     fill_triangle(g, 19, 18, 24, 17, 23)
     fill_triangle(g, 21, 13, 27, 11, 16)
-    return g
-
-def castle64():
-    g = new_grid(64, 64)
-    fill_rect(g, 44, 6, 56, 57)
-    for c in range(6, 58, 7):
-        fill_rect(g, 40, c, 43, min(c + 4, 57))
-    fill_rect(g, 28, 27, 56, 36)
-    fill_triangle(g, 20, 31, 28, 25, 38)
-    fill_rect(g, 16, 31, 19, 31)
-    fill_rect(g, 16, 32, 16, 34)
-    fill_rect(g, 28, 7, 56, 15)
-    fill_triangle(g, 18, 11, 28, 5, 17)
-    fill_rect(g, 14, 11, 17, 11)
-    fill_rect(g, 14, 12, 14, 14)
-    fill_rect(g, 28, 48, 56, 56)
-    fill_triangle(g, 18, 52, 28, 46, 58)
-    fill_rect(g, 14, 52, 17, 52)
-    fill_rect(g, 14, 49, 14, 51)
-    carve_rect(g, 48, 28, 56, 35)
-    carve_rect(g, 44, 30, 47, 33)
-    carve_rect(g, 46, 12, 48, 14)
-    carve_rect(g, 46, 19, 48, 21)
-    carve_rect(g, 46, 42, 48, 44)
-    carve_rect(g, 46, 49, 48, 51)
-    carve_rect(g, 34, 29, 37, 32)
-    carve_rect(g, 38, 10, 40, 12)
-    carve_rect(g, 38, 51, 40, 53)
     return g
 
 def art(*rows):
@@ -193,31 +160,31 @@ PATTERNS = {
         ".....XX.....",
     ),
     "4 苹果 apple 14x14": art(
-        "..............",
         "......XX......",
-        "......XX.XX...",
-        ".XXXXX..XXXXX.",
+        "......XX......",
+        "......XX......",
+        ".....XXXX.....",
+        "...XXX..XXX...",
+        "..XXXXXXXXXX..",
+        ".XXXXXXXXXXXX.",
         "XXXXXXXXXXXXXX",
         "XXXXXXXXXXXXXX",
         ".XXXXXXXXXXXX.",
-        ".XXXXXXXXXXXX.",
         "..XXXXXXXXXX..",
-        "..XXXXXXXXXX..",
-        "...XXXXXXXX...",
         "...XXXXXXXX...",
         "....XXXXXX....",
         ".....XXXX.....",
     ),
     "5 小房子 house 16x16": art(
-        "....XXXXXXXXXX..",
-        "...XXXXXXXXXXX..",
+        ".......XX.......",
+        "......XXXX......",
+        ".....XXXXXX.....",
+        "....XXXXXXXX....",
+        "...XXXXXXXXXX...",
         "..XXXXXXXXXXXX..",
         ".XXXXXXXXXXXXXX.",
         "XXXXXXXXXXXXXXXX",
         "XXXXXXXXXXXXXXXX",
-        "XXXXXXXXXXXXXXXX",
-        "XXXXXXXXXXXXXXXX",
-        "XXX...XXXX...XXX",
         "XXX...XXXX...XXX",
         "XXX...XXXX...XXX",
         "XXXXXXX..XXXXXXX",

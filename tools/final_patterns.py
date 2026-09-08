@@ -124,16 +124,16 @@ show("3 蝴蝶", art(
 
 # ---------- 4 APPLE ----------
 show("4 苹果", art(
-    "..............",
+    "......XX......",
+    "......XX......",
     "......XX......",
     ".....XXXX.....",
-    ".XXXXX..XXXXX.",
-    ".XXXXX..XXXXX.",
-    "XXXXXXXXXXXXXX",
-    "XXXXXXXXXXXXXX",
-    ".XXXXXXXXXXXX.",
-    ".XXXXXXXXXXXX.",
+    "...XXX..XXX...",
     "..XXXXXXXXXX..",
+    ".XXXXXXXXXXXX.",
+    "XXXXXXXXXXXXXX",
+    "XXXXXXXXXXXXXX",
+    ".XXXXXXXXXXXX.",
     "..XXXXXXXXXX..",
     "...XXXXXXXX...",
     "....XXXXXX....",
@@ -180,17 +180,31 @@ show("6 小鱼", art(
     "................",
 ))
 
-# ---------- 7 STAR (solid) ----------
+# ---------- 7 STAR (hand-drawn 5-point, symmetric) ----------
 def solid_star():
-    g = new_grid(20, 20)
-    cx, cy, outer = 9.5, 9.5, 9.5
-    verts = star_vertices(cx, cy, outer, outer * 0.42)
-    for r in range(20):
-        for c in range(20):
-            if point_in_polygon(c + 0.5, r + 0.5, verts):
-                g[r][c] = 1
-    return g
-show("7 星星(实心五角)", solid_star())
+    return art(
+        "....................",
+        ".........XX.........",
+        "........XXXX........",
+        "........XXXX........",
+        ".......XXXXXX.......",
+        "......XXXXXXXX......",
+        ".....XXXXXXXXXX.....",
+        "..XXXXXXX..XXXXXXX..",
+        "..XXXXXXX..XXXXXXX..",
+        "..XXXXXXX..XXXXXXX..",
+        "...XXXXXX..XXXXXX...",
+        "....XXXXX..XXXXX....",
+        "....XXXX....XXXX....",
+        "....XXXXXXXXXXXX....",
+        ".....XXXXXXXXXX.....",
+        ".....XXX....XXX.....",
+        "......XX....XX......",
+        "......XX....XX......",
+        ".......XX..XX.......",
+        "....................",
+    )
+show("7 星星(手写五角星)", solid_star())
 
 # ---------- 8 CROWN (unchanged) ----------
 def crown():
@@ -207,14 +221,13 @@ def crown():
     return g
 show("8 皇冠", crown())
 
-# ---------- 9 MOON (full moon + craters) ----------
+# ---------- 9 MOON (crescent) ----------
 def moon():
     g = new_grid(24, 24)
     fill_ellipse(g, 12, 12, 10, 10, strict=True)
-    for (r, c) in [(6, 6), (8, 12), (10, 17), (14, 8), (16, 15), (18, 11)]:
-        carve_diamond(g, r, c)
+    carve_ellipse(g, 16, 12, 7.5, 7.5, strict=True)
     return g
-show("9 月亮(满月)", moon())
+show("9 月亮(月牙)", moon())
 
 # ---------- 10 ROCKET ----------
 def rocket():
@@ -228,40 +241,3 @@ def rocket():
     return g
 show("10 火箭", rocket())
 
-# ---------- 11 CASTLE (tuned: central keep tallest) ----------
-def castle():
-    g = new_grid(64, 64)
-    # 主城墙
-    fill_rect(g, 44, 6, 56, 57)
-    # 墙顶城垛
-    for c in range(6, 58, 7):
-        fill_rect(g, 40, c, 43, min(c + 4, 57))
-    # 中央主堡（最高）：宽 14，屋顶尖到 row 12
-    fill_rect(g, 28, 25, 56, 38)
-    fill_triangle(g, 12, 31, 28, 22, 40)
-    # 中央旗
-    fill_rect(g, 8, 31, 11, 31)
-    fill_rect(g, 8, 32, 8, 34)
-    # 左塔（次高）：屋顶尖到 row 20
-    fill_rect(g, 28, 7, 56, 15)
-    fill_triangle(g, 20, 11, 28, 5, 17)
-    fill_rect(g, 16, 11, 19, 11)
-    fill_rect(g, 16, 12, 16, 14)
-    # 右塔
-    fill_rect(g, 28, 48, 56, 56)
-    fill_triangle(g, 20, 52, 28, 46, 58)
-    fill_rect(g, 16, 52, 19, 52)
-    fill_rect(g, 16, 49, 16, 51)
-    # 拱门
-    carve_rect(g, 48, 28, 56, 35)
-    carve_rect(g, 44, 30, 47, 33)
-    # 窗户
-    carve_rect(g, 46, 12, 48, 14)
-    carve_rect(g, 46, 19, 48, 21)
-    carve_rect(g, 46, 42, 48, 44)
-    carve_rect(g, 46, 49, 48, 51)
-    carve_rect(g, 34, 29, 37, 32)
-    carve_rect(g, 38, 10, 40, 12)
-    carve_rect(g, 38, 51, 40, 53)
-    return g
-show("11 城堡 (2x down)", castle(), scale=2)
