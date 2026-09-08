@@ -5,7 +5,8 @@ package com.example.xiangsugame.model
  *
  * 职责：
  *  - 保存当前棋盘上每个格子的三态状态（以 Int 存储，见 [CellState]）；
- *  - 提供对单个格子的状态修改入口（点击循环切换 / 直接设置 / 一键补齐）；
+ *  - 提供"笔划涂刷"入口：一次按住拖动/单击 = 一条笔划（start → stroke ×N → commit），
+ *    整条笔划作为一个可撤销步骤，适合工具笔连续填色；
  *  - 用两条指令栈（undoStack / redoStack）实现标准撤销/重做语义。
  *
  * 数据布局：board[r][c] 存储第 r 行第 c 列格子的 [CellState.value]。
@@ -13,12 +14,11 @@ package com.example.xiangsugame.model
  * 原始数组更省内存、访问更快；需要语义化读取时再用 CellState.fromValue 转换。
  *
  * 撤销/重做语义：
- *  每次修改记录为一个 Move（改了哪格、改前值、改后值），压入撤销栈；
+ *  每次修改最终都以一个 Move（单格或 Batch）压入撤销栈；
  *  撤销时弹出栈顶 Move 并回退到改前值，同时把该 Move 压入重做栈；
- *  产生任何"新操作"时清空重做栈 —— 这是标准做法，因为历史被新操作分叉后，
- *  旧的重做分支就失效了。
+ *  产生任何"新操作"时清空重做栈 —— 历史被新操作分叉后旧分支失效（标准做法）。
  *  Move 分两种：Single 记录单个格子变化；Batch 记录一批格子同时变化
- *  （"一键补齐"把整盘改动压成一个批，实现一步撤销）。
+ *  （一条拖拽笔划 / 一键补齐整盘都压成一个 Batch，实现"一步撤销"）。
  */
 class GameBoard(val rows: Int, val cols: Int) {
 
@@ -30,7 +30,7 @@ class GameBoard(val rows: Int, val cols: Int) {
         /** 单个格子的状态变化。 */
         data class Single(val row: Int, val col: Int, val before: Int, val after: Int) : Move
 
-        /** 一批格子同时变化（一键补齐），整批作为一个可撤销步骤。 */
+        /** 一批格子同时变化（一条笔划 / 一键补齐），整批作为一个可撤销步骤。 */
         data class Batch(val moves: List<Single>) : Move
     }
 
@@ -43,32 +43,59 @@ class GameBoard(val rows: Int, val cols: Int) {
     /** 重做栈非空 → 允许重做。 */
     val canRedo: Boolean get() = redoStack.isNotEmpty()
 
+    // ———— 笔划涂刷（工具笔拖动连涂的核心）————
+
+    private var strokeActive = false
+    private val strokeMoves = mutableListOf<Move.Single>()
+
+    /** 开始一条笔划：清空本次收集的改动（通常在手指落下时调用）。 */
+    fun startStroke() {
+        strokeActive = true
+        strokeMoves.clear()
+    }
+
     /**
-     * 点击循环切换指定格：空白 → 涂黑 → 标记空白 → 空白（见 [CellState.next]）。
-     *
-     * 这是棋盘唯一的"玩家点击"入口。
-     *
-     * @return 是否真的产生了状态变化（三态循环永远会变，除非… 循环本身保证变化，
-     *         因此主要用于区分是否需要触发 UI 刷新）
+     * 在笔划中给单格上当前工具的目标状态。
+     * 与目标状态一致或不在笔划中时返回 false（无改动）。
+     * @return 是否真的把该格改成了目标状态
      */
-    fun cycleCell(row: Int, col: Int): Boolean {
+    fun strokeCell(row: Int, col: Int, target: CellState): Boolean {
+        if (!strokeActive) return false
         val before = board[row][col]
-        val after = CellState.fromValue(before).next().value
-        if (after == before) return false
-        board[row][col] = after
-        // 记录改动并压栈；新操作会切断重做历史
-        undoStack.addLast(Move.Single(row, col, before, after))
+        if (before == target.value) return false
+        board[row][col] = target.value
+        strokeMoves.add(Move.Single(row, col, before, target.value))
+        return true
+    }
+
+    /**
+     * 结束笔划：把本次收集的所有单格改动压成一个 Batch 提交到撤销栈。
+     * 空笔划（没画出任何变化）返回 false，不产生撤销步骤。
+     * @return 是否真的产生了一次可撤销改动
+     */
+    fun commitStroke(): Boolean {
+        strokeActive = false
+        if (strokeMoves.isEmpty()) return false
+        undoStack.addLast(Move.Batch(strokeMoves.toList()))
+        strokeMoves.clear()
         redoStack.clear()
         return true
     }
 
-    /** 直接设置某格状态（供"标记空白"长按操作、提示功能、重置等使用）。 */
-    fun setCell(row: Int, col: Int, state: CellState) {
-        val before = board[row][col]
-        if (before == state.value) return // 目标状态与当前一致，视为无操作
-        board[row][col] = state.value
-        undoStack.addLast(Move.Single(row, col, before, state.value))
-        redoStack.clear()
+    /** 放弃当前笔划：回滚这次画出的所有改动（手势被取消等场景）。 */
+    fun cancelStroke() {
+        if (strokeActive) {
+            for (m in strokeMoves) board[m.row][m.col] = m.before
+            strokeMoves.clear()
+            strokeActive = false
+        }
+    }
+
+    /** 便利方法：一条单格笔划（单击落笔即走 start/commit 的路径）。 */
+    fun paintCell(row: Int, col: Int, target: CellState): Boolean {
+        startStroke()
+        strokeCell(row, col, target)
+        return commitStroke()
     }
 
     /**

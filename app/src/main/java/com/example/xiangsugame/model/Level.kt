@@ -30,8 +30,6 @@ data class Level(
     val cols: Int,
     val clueGrid: Array<IntArray>,
     val answerGrid: Array<IntArray>,
-    /** 是否隐藏关（64×64 超大尺寸压轴关）：玩家需通关全部常规关才解锁，管理员可直接开启。 */
-    val isHidden: Boolean = false,
     /** 限时挑战模式下的时限（秒）；null 表示不在限时模式使用该关（正常按难度给默认值）。 */
     val timedLimitSeconds: Int? = null,
 ) {
@@ -59,7 +57,6 @@ data class Level(
             difficulty: Difficulty,
             answer: Array<IntArray>,
             cluePositions: Set<Pair<Int, Int>>? = null,
-            isHidden: Boolean = false,
             timedLimitSeconds: Int? = null,
         ): Level {
             val rows = answer.size
@@ -76,7 +73,6 @@ data class Level(
                     PuzzleGenerator.cluesFromAnswer(answer, cluePositions)
                 },
                 answerGrid = answer,
-                isHidden = isHidden,
                 timedLimitSeconds = timedLimitSeconds,
             )
         }

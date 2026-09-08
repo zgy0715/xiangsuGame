@@ -5,32 +5,39 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -45,46 +52,69 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.xiangsugame.GameProgress
+import com.example.xiangsugame.data.AccountStore
 import com.example.xiangsugame.model.CellState
 import com.example.xiangsugame.model.Difficulty
 import com.example.xiangsugame.model.GameBoard
 import com.example.xiangsugame.model.GameMode
 import com.example.xiangsugame.model.Level
-import com.example.xiangsugame.model.UserRole
 import com.example.xiangsugame.model.Validator
 import com.example.xiangsugame.ui.theme.Amber
 import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Cyan
+import com.example.xiangsugame.ui.theme.GlowPurple
 import com.example.xiangsugame.ui.theme.Ink
 import com.example.xiangsugame.ui.theme.Sand
 import kotlinx.coroutines.delay
 
+/** 宽屏阈值：屏幕宽度 ≥ 此值（横屏手机/平板/桌面窗口）时启用「棋盘 + 侧栏」布局。 */
+private val WideLayoutThreshold = 600.dp
+
+/** 棋盘尺寸上限（竖屏 / 宽屏）：防止棋盘被拉伸得过大，超出部分居中留白。 */
+private val BoardMaxSizePortrait = 340.dp
+private val BoardMaxSizeWide = 480.dp
+
+/** 结算弹窗宽度上限：紧凑卡片，不铺满屏幕。 */
+private val OverlayMaxWidth = 300.dp
+
 /**
- * 游戏界面 —— 游戏化改版。
+ * 游戏界面 —— 响应式布局 + 工具笔 + 显式检查。
  *
- * 布局自上而下：
- *  - 顶部 HUD：返回按钮 + 关卡名/难度 + 计时胶囊；
- *  - 进度条：实时显示"已涂 X / 应涂 N 格"，有推进感；
- *  - 中部：棋盘（BoardView，占据剩余空间）；
- *  - 底部操作栏：撤销 / 重做 / 重置三个圆形按钮 + 错误提示开关 + 参考答案。
+ * 布局按可用宽度自适应，保证棋盘尽量大：
+ *  - 竖屏（窄）：HUD / 进度 / 棋盘(weight) / 紧凑控件三行，压缩底部空间让给棋盘；
+ *  - 横屏、平板、桌面窗口（宽）：左侧 HUD+进度+棋盘占满剩余空间，右侧固定侧栏
+ *    竖排工具/操作/辅助按钮，大棋盘也能获得接近整屏的显示面积。
  *
- * 通关后不再用普通弹窗，而是全屏"🎉 撒花结算"：飘落的彩纸 + 大号像素画揭晓，
- * 给足成就感。状态管理沿用"就地修改 + boardVersion 版本号驱动重组"的方案。
+ * 控件自上而下（竖屏为三行紧凑胶囊，宽屏侧栏为竖排分组）：
+ *  - 工具：✏ 涂黑笔（点未定格涂黑、点已黑格清除，一支笔双向）/ ✕ 留白标记；
+ *  - 操作：撤销 / 重做 / 重置；
+ *  - 辅助：🔍 检查错误 / 参考答案 / ⚡ 一键补齐（额度制）。
+ *
+ * 填色：按住棋盘拖动即沿轨迹连续涂当前工具，一条笔划 = 一步撤销；
+ * 通关后全屏"🎉 撒花结算"（内容自适应 + 可滚动，任何窗口尺寸都居中完整）。
  */
 @Composable
 fun GameScreen(
     level: Level,
-    progress: GameProgress,
+    account: AccountStore,
     mode: GameMode,
-    role: UserRole,
     onBack: () -> Unit,
     onNextLevel: (() -> Unit)? = null,
+    /** 首通回调(仅触发一次,携带最终棋盘快照):对局 finish / 成绩上传都接这里。 */
+    onSolved: ((board: Array<IntArray>, elapsedSeconds: Int) -> Unit)? = null,
+    /** 竞速进度上报(涂格数变化 / 每秒一次;对局页用,单人页不传)。 */
+    onProgress: ((filled: Int, elapsedSeconds: Int) -> Unit)? = null,
+    /** 外部冻结(对战:对方先完成时暂停本机计时与输入,由对局页覆盖提示)。 */
+    externalPaused: Boolean = false,
+    /** 外部接管结算(对战用自己的名次页)时关闭内置通关/超时弹窗。 */
+    showOverlays: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     // remember(level.id)：切换关卡时用新关卡重建状态；同一关卡重组时保持状态
@@ -93,8 +123,12 @@ fun GameScreen(
 
     // 棋盘版本号：每次格子变化 +1，驱动依赖棋盘的状态/渲染重组
     var boardVersion by remember(level.id) { mutableIntStateOf(0) }
-    // 错误提示开关状态
-    var errorHintEnabled by remember { mutableStateOf(true) }
+    // 当前选中的填色工具
+    var tool by remember(level.id) { mutableStateOf(PaintTool.FILL) }
+    // 涂黑笔本笔方向：起笔第一格决定（已黑→清除，其余→涂黑），整笔保持一致
+    var strokeTarget by remember(level.id) { mutableStateOf<CellState?>(null) }
+    // 显式"检查"结果：非 null 表示检查中（该集合是当时快照，编辑后自动清除）
+    var checkedWrong by remember(level.id) { mutableStateOf<Set<Pair<Int, Int>>?>(null) }
     // 本关已用秒数（计时器累计）
     var elapsedSeconds by remember(level.id) { mutableIntStateOf(0) }
     // 参考答案弹窗开关；peekedAnswer 记录本关是否查看过答案（结算时仅提示、不惩罚）
@@ -114,20 +148,23 @@ fun GameScreen(
     val board = gameBoard.board
     // 胜利判定：棋盘每次变化后重算
     val isSolved = remember(level.id, boardVersion) { validator.isSolved(board) }
-    // 错误格集合：仅当开启错误提示时才计算（省去无谓的扫描开销）
-    val wrongCells = remember(level.id, boardVersion, errorHintEnabled) {
-        if (errorHintEnabled) validator.wrongCells(board) else emptySet()
-    }
-    // 已满足的提示格集合：窗口已确定且数量达标 → 数字变绿（经典反馈）
+    // 已满足的提示格集合：窗口已确定且数量达标 → 数字变绿（经典正向反馈，不构成"报错"）
     val satisfiedClues = remember(level.id, boardVersion) { validator.satisfiedClues(board) }
     // 推进进度：已涂黑格数 / 答案需要涂黑的总数
     val filledCount = remember(level.id, boardVersion) { board.sumOf { row -> row.count { it == CellState.FILLED.value } } }
     val totalFilled = remember(level.id) { level.answerGrid.sumOf { row -> row.count { it == 1 } } }
     val progressFraction = if (totalFilled == 0) 0f else filledCount.toFloat() / totalFilled
 
-    // 计时器：协程循环，未通关且未超时时每秒 +1；限时模式倒计时归零即判失败
-    LaunchedEffect(level.id, isSolved) {
-        while (!isSolved && !timedOut) {
+    // 是否可交互：通关/超时/对局被外部冻结时都停手
+    val canInteract = !isSolved && !timedOut && !externalPaused
+    // 首通上报只发一次(再来一局后重解会再次解锁,但对局/成绩上传只认首次)
+    var solvedReported by remember(level.id) { mutableStateOf(false) }
+
+    // 计时器：协程循环，未通关/未超时/未被对局冻结时每秒 +1；
+    // 限时模式倒计时归零即判失败。
+    // key 带上 timedOut / externalPaused：状态复位后若不重启本协程，计时就永远停了。
+    LaunchedEffect(level.id, isSolved, timedOut, externalPaused) {
+        while (!isSolved && !timedOut && !externalPaused) {
             delay(1000)
             elapsedSeconds += 1
             if (mode == GameMode.TIMED && elapsedSeconds >= limitSeconds && !isSolved) {
@@ -136,213 +173,270 @@ fun GameScreen(
         }
     }
 
-    // 通关后把本关标记为已完成并持久化（顺序解锁下一关）
+    // 通关落库：内置关(正 id)写入解锁集并顺序解锁;在线关(负 id)只记录"玩过";
+    // 两种情况的首次通关都触发 onSolved 钩子(上传成绩 / 对局 finish 由调用方处理)
     LaunchedEffect(level.id, isSolved) {
-        if (isSolved) progress.markCompleted(level.id)
+        if (isSolved && !solvedReported) {
+            solvedReported = true
+            if (level.id > 0) account.markCompleted(level.id) else account.recordOnlineSolved(level.id)
+            val snapshot = gameBoard.board.map(IntArray::clone).toTypedArray()
+            onSolved?.invoke(snapshot, elapsedSeconds)
+        }
     }
 
-    Column(
+    // 竞速进度上报:格子数或秒表变化时通知外层(传输层自带节流)
+    LaunchedEffect(level.id, boardVersion, isSolved, timedOut, externalPaused, elapsedSeconds) {
+        if (!isSolved && !timedOut && !externalPaused) {
+            onProgress?.invoke(filledCount, elapsedSeconds)
+        }
+    }
+
+    // —— 公共控件回调（两种布局复用）——
+    val onStrokeBegin: () -> Unit = {
+        // 玩家一动手，旧"检查"结果即失效（避免过期标红误导）
+        checkedWrong = null
+        strokeTarget = null // 新一笔重新判定涂/擦方向
+        gameBoard.startStroke()
+    }
+    val onStrokeCell: (Int, Int) -> Unit = { r, c ->
+        val target = when (tool) {
+            // 留白笔：标记"确定留白"
+            PaintTool.EMPTY -> CellState.MARKED_EMPTY
+            // 涂黑笔：起笔第一格决定本笔方向 —— 落在黑格上=清除，其余=涂黑
+            PaintTool.FILL -> strokeTarget ?: run {
+                val t = if (board[r][c] == CellState.FILLED.value) CellState.UNDECIDED else CellState.FILLED
+                strokeTarget = t
+                t
+            }
+        }
+        if (gameBoard.strokeCell(r, c, target)) boardVersion++
+    }
+    val onStrokeEnd: () -> Unit = {
+        if (gameBoard.commitStroke()) boardVersion++
+    }
+    val onStrokeCancel: () -> Unit = {
+        gameBoard.cancelStroke()
+        boardVersion++
+    }
+    val onToolSelect: (PaintTool) -> Unit = {
+        tool = it
+        checkedWrong = null
+    }
+    val onUndo: () -> Unit = {
+        checkedWrong = null
+        if (gameBoard.undo()) boardVersion++
+    }
+    val onRedo: () -> Unit = {
+        checkedWrong = null
+        if (gameBoard.redo()) boardVersion++
+    }
+    val onReset: () -> Unit = {
+        checkedWrong = null
+        gameBoard.reset()
+        elapsedSeconds = 0 // 重置也归零计时，视为重新开始
+        boardVersion++
+    }
+    val onFill: () -> Unit = {
+        if (account.useFill()) {
+            gameBoard.applySolution(level.answerGrid)
+            checkedWrong = null
+            boardVersion++
+        }
+    }
+    val onCheck: () -> Unit = { checkedWrong = validator.wrongCells(board) }
+    val onShowAnswer: () -> Unit = {
+        peekedAnswer = true
+        showAnswer = true
+    }
+    val onClearWrong: () -> Unit = {
+        // 把检查出的所有错误格一键清回"未决定"（一条笔划 = 一步可撤销）
+        gameBoard.startStroke()
+        for ((r, c) in checkedWrong.orEmpty()) {
+            gameBoard.strokeCell(r, c, CellState.UNDECIDED)
+        }
+        gameBoard.commitStroke()
+        checkedWrong = null
+        boardVersion++
+    }
+
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .systemBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .systemBarsPadding(),
     ) {
-        // —— 顶部 HUD：返回 + 关卡信息 + 计时 ——
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // 返回按钮（圆形，单层可点击）
-            Surface(
-                onClick = onBack,
-                modifier = Modifier.size(40.dp),
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        val isWide = maxWidth >= WideLayoutThreshold
+
+        if (isWide) {
+            // ———— 宽屏：左棋盘 + 右侧栏（横屏手机/平板/桌面窗口）————
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
             ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("←", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .padding(end = 16.dp),
+                ) {
+                    HudRow(
+                        level = level,
+                        mode = mode,
+                        elapsedSeconds = elapsedSeconds,
+                        limitSeconds = limitSeconds,
+                        onBack = onBack,
+                    )
+                    Spacer(modifier = Modifier.height(6.dp))
+                    ProgressRow(
+                        filled = filledCount,
+                        total = totalFilled,
+                        fraction = progressFraction,
+                    )
+                    // 棋盘在剩余空间内居中，尺寸封顶 BoardMaxSizeWide，不再无限拉伸
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        BoardView(
+                            level = level,
+                            // 通关瞬间直接用答案矩阵渲染，避免"标记空白"圆点残留在空白格上
+                            board = if (isSolved) level.answerGrid else board,
+                            satisfiedClues = satisfiedClues,
+                            revealedWrong = checkedWrong.orEmpty(),
+                            tool = tool,
+                            onStrokeBegin = onStrokeBegin,
+                            onStrokeCell = onStrokeCell,
+                            onStrokeEnd = onStrokeEnd,
+                            onStrokeCancel = onStrokeCancel,
+                            // 通关后进入"图片模式"：隐藏提示数字、禁止点击，揭晓完整像素画；
+                            // 限时超时失败同样冻结棋盘
+                            showClues = !isSolved,
+                            interactive = canInteract,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .widthIn(max = BoardMaxSizeWide),
+                        )
+                    }
+                }
+
+                // 右侧控制栏：竖排分组，小窗口时可滚动
+                Column(
+                    modifier = Modifier
+                        .width(230.dp)
+                        .fillMaxHeight()
+                        .verticalScroll(rememberScrollState()),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    SectionLabel("填色工具")
+                    ToolGroup(
+                        selected = tool,
+                        enabled = canInteract,
+                        onSelect = onToolSelect,
+                        stacked = true,
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    SectionLabel("操作")
+                    ActionGroup(
+                        canUndo = gameBoard.canUndo,
+                        canRedo = gameBoard.canRedo,
+                        onUndo = onUndo,
+                        onRedo = onRedo,
+                        onReset = onReset,
+                        stacked = true,
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    SectionLabel("辅助")
+                    AssistGroup(
+                        stacked = true,
+                        checkEnabled = canInteract,
+                        fillEnabled = account.fillQuotaRemaining > 0 && canInteract,
+                        fillQuota = account.fillQuotaRemaining,
+                        checkedWrong = checkedWrong,
+                        onCheck = onCheck,
+                        onShowAnswer = onShowAnswer,
+                        onFill = onFill,
+                        onClearWrong = onClearWrong,
+                        onDismissCheck = { checkedWrong = null },
+                    )
                 }
             }
-
+        } else {
+            // ———— 竖屏：紧凑纵向堆叠，底部控件压到三行，把最大空间让给棋盘 ————
             Column(
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text(
-                    level.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = Ink,
+                HudRow(
+                    level = level,
+                    mode = mode,
+                    elapsedSeconds = elapsedSeconds,
+                    limitSeconds = limitSeconds,
+                    onBack = onBack,
                 )
-                Text(
-                    buildString {
-                        append("${level.difficulty.label} ★ · ${level.rows}×${level.cols}")
-                        append(if (mode == GameMode.TIMED) " · ⏱限时" else " · 🎮自由")
-                        append(if (role == UserRole.ADMIN) " · 👑管理员" else " · 👤玩家")
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Spacer(modifier = Modifier.height(6.dp))
+                ProgressRow(
+                    filled = filledCount,
+                    total = totalFilled,
+                    fraction = progressFraction,
+                )
+                BoardView(
+                    level = level,
+                    board = if (isSolved) level.answerGrid else board,
+                    satisfiedClues = satisfiedClues,
+                    revealedWrong = checkedWrong.orEmpty(),
+                    tool = tool,
+                    onStrokeBegin = onStrokeBegin,
+                    onStrokeCell = onStrokeCell,
+                    onStrokeEnd = onStrokeEnd,
+                    onStrokeCancel = onStrokeCancel,
+                    showClues = !isSolved,
+                    interactive = canInteract,
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                ToolGroup(
+                    selected = tool,
+                    enabled = canInteract,
+                    onSelect = onToolSelect,
+                    stacked = false,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                ActionGroup(
+                    canUndo = gameBoard.canUndo,
+                    canRedo = gameBoard.canRedo,
+                    onUndo = onUndo,
+                    onRedo = onRedo,
+                    onReset = onReset,
+                    stacked = false,
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                AssistGroup(
+                    stacked = false,
+                    checkEnabled = canInteract,
+                    fillEnabled = account.fillQuotaRemaining > 0 && canInteract,
+                    fillQuota = account.fillQuotaRemaining,
+                    checkedWrong = checkedWrong,
+                    onCheck = onCheck,
+                    onShowAnswer = onShowAnswer,
+                    onFill = onFill,
+                    onClearWrong = onClearWrong,
+                    onDismissCheck = { checkedWrong = null },
                 )
             }
-
-            // 计时胶囊：自由模式显示用时；限时模式显示倒计时，剩余不足 1 分钟变红
-            val remainingSeconds = (limitSeconds - elapsedSeconds).coerceAtLeast(0)
-            val isLow = mode == GameMode.TIMED && remainingSeconds < 60
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = if (isLow) MaterialTheme.colorScheme.errorContainer
-                else MaterialTheme.colorScheme.secondaryContainer,
-                contentColor = if (isLow) MaterialTheme.colorScheme.onErrorContainer
-                else MaterialTheme.colorScheme.onSecondaryContainer,
-            ) {
-                Text(
-                    "⏱ ${formatTime(if (mode == GameMode.TIMED) remainingSeconds else elapsedSeconds)}",
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(10.dp))
-
-        // —— 进度条 ——
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            LinearProgressIndicator(
-                progress = { progressFraction },
-                modifier = Modifier
-                    .weight(1f)
-                    .height(10.dp),
-                color = Coral,
-                trackColor = Sand,
-            )
-            Spacer(modifier = Modifier.width(10.dp))
-            Text(
-                "已涂 $filledCount / $totalFilled",
-                style = MaterialTheme.typography.bodySmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // —— 中部：棋盘 ——
-        BoardView(
-            level = level,
-            // 通关瞬间直接用答案矩阵渲染，避免"标记空白"圆点残留在空白格上
-            board = if (isSolved) level.answerGrid else board,
-            wrongCells = wrongCells,
-            satisfiedClues = satisfiedClues,
-            errorHintEnabled = errorHintEnabled,
-            onCycle = { r, c ->
-                if (gameBoard.cycleCell(r, c)) boardVersion++
-            },
-            onMarkEmpty = { r, c ->
-                if (gameBoard.board[r][c] != CellState.MARKED_EMPTY.value) {
-                    gameBoard.setCell(r, c, CellState.MARKED_EMPTY)
-                    boardVersion++
-                }
-            },
-            // 通关后进入"图片模式"：隐藏提示数字、禁止点击，揭晓完整像素画；
-            // 限时超时失败同样冻结棋盘
-            showClues = !isSolved,
-            interactive = !isSolved && !timedOut,
-            modifier = Modifier
-                .weight(1f)
-                .padding(vertical = 8.dp),
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // —— 底部操作栏：撤销 / 重做 / 重置 ——
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            RoundActionButton(
-                icon = "↩",
-                label = "撤销",
-                enabled = gameBoard.canUndo,
-                onClick = { if (gameBoard.undo()) boardVersion++ },
-            )
-            RoundActionButton(
-                icon = "↪",
-                label = "重做",
-                enabled = gameBoard.canRedo,
-                onClick = { if (gameBoard.redo()) boardVersion++ },
-            )
-            RoundActionButton(
-                icon = "↺",
-                label = "重置",
-                enabled = true,
-                onClick = {
-                    gameBoard.reset()
-                    elapsedSeconds = 0 // 重置也归零计时，视为重新开始
-                    boardVersion++
-                },
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // —— 一键补齐：消耗全局额度（全游戏仅 2 次），自动补全全部正确像素 ——
-        Button(
-            onClick = {
-                if (progress.useFill()) {
-                    gameBoard.applySolution(level.answerGrid)
-                    boardVersion++
-                }
-            },
-            enabled = progress.fillQuotaRemaining > 0 && !isSolved && !timedOut,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Coral,
-                disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            ),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Text(
-                if (progress.fillQuotaRemaining > 0) {
-                    "⚡ 一键补齐（剩 ${progress.fillQuotaRemaining} 次）"
-                } else {
-                    "⚡ 一键补齐（次数已用完）"
-                },
-                fontWeight = FontWeight.Bold,
-            )
-        }
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // —— 错误提示开关 + 参考答案 ——
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "错误提示",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(end = 4.dp),
-            )
-            Switch(
-                checked = errorHintEnabled,
-                onCheckedChange = { errorHintEnabled = it },
-            )
-            Spacer(modifier = Modifier.weight(1f))
-            OutlinedButton(onClick = {
-                peekedAnswer = true
-                showAnswer = true
-            }) { Text("参考答案") }
         }
     }
 
-    // —— 通关撒花结算（全屏遮罩）——
-    if (isSolved) {
+    // —— 通关撒花结算（全屏遮罩;对局模式由外部结算接管）——
+    if (isSolved && showOverlays) {
         WinOverlay(
             level = level,
             elapsedSeconds = elapsedSeconds,
@@ -351,6 +445,8 @@ fun GameScreen(
                 gameBoard.reset()
                 elapsedSeconds = 0
                 peekedAnswer = false
+                checkedWrong = null
+                solvedReported = false
                 boardVersion++
             },
             onNextLevel = onNextLevel,
@@ -359,13 +455,15 @@ fun GameScreen(
     }
 
     // —— 限时挑战超时失败（全屏遮罩，优先于成功结算）——
-    if (!isSolved && timedOut) {
+    if (!isSolved && timedOut && showOverlays) {
         TimeoutOverlay(
             level = level,
             onReplay = {
                 gameBoard.reset()
                 elapsedSeconds = 0
                 timedOut = false
+                checkedWrong = null
+                solvedReported = false
                 boardVersion++
             },
             onBack = onBack,
@@ -387,13 +485,10 @@ fun GameScreen(
                     BoardView(
                         level = level,
                         board = level.answerGrid,
-                        wrongCells = emptySet(),
                         satisfiedClues = emptySet(),
-                        errorHintEnabled = false,
-                        onCycle = { _, _ -> },
-                        onMarkEmpty = { _, _ -> },
                         showClues = false,
                         interactive = false,
+                        zoomable = true,
                         modifier = Modifier.fillMaxWidth(0.85f),
                     )
                 }
@@ -405,38 +500,332 @@ fun GameScreen(
     }
 }
 
-/** 圆形操作按钮：圆底 + 符号 + 下方小字标签（撤销/重做/重置）。 */
+// ============================================================
+// 通用小控件（HUD / 进度 / 工具 / 操作 / 辅助）
+// ============================================================
+
+/** 顶部 HUD：返回 + 关卡名（难度·尺寸·模式·身份）+ 计时胶囊。 */
 @Composable
-private fun RoundActionButton(
-    icon: String,
-    label: String,
-    enabled: Boolean,
-    onClick: () -> Unit,
+private fun HudRow(
+    level: Level,
+    mode: GameMode,
+    elapsedSeconds: Int,
+    limitSeconds: Int,
+    onBack: () -> Unit,
 ) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 返回按钮（圆形，单层可点击）
         Surface(
-            onClick = onClick,
-            enabled = enabled,
+            onClick = onBack,
+            modifier = Modifier.size(38.dp),
             shape = CircleShape,
-            color = if (enabled) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            contentColor = if (enabled) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
-            shadowElevation = if (enabled) 2.dp else 0.dp,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
         ) {
-            Box(
-                modifier = Modifier.size(52.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(icon, fontSize = 24.sp)
+            Box(contentAlignment = Alignment.Center) {
+                Text("←", fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
         }
-        Spacer(modifier = Modifier.height(4.dp))
+
+        Column(
+            modifier = Modifier.weight(1f),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                level.name,
+                style = MaterialTheme.typography.titleLarge,
+                color = Ink,
+            )
+            Text(
+                "${level.difficulty.label} ★ · ${level.rows}×${level.cols} · " +
+                    if (mode == GameMode.TIMED) "⏱限时" else "🎮自由",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // 计时胶囊：自由模式显示用时；限时模式显示倒计时，剩余不足 1 分钟变红
+        val remainingSeconds = (limitSeconds - elapsedSeconds).coerceAtLeast(0)
+        val isLow = mode == GameMode.TIMED && remainingSeconds < 60
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = if (isLow) MaterialTheme.colorScheme.errorContainer
+            else MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = if (isLow) MaterialTheme.colorScheme.onErrorContainer
+            else MaterialTheme.colorScheme.onSecondaryContainer,
+        ) {
+            Text(
+                "⏱ ${formatTime(if (mode == GameMode.TIMED) remainingSeconds else elapsedSeconds)}",
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
+    }
+}
+
+/** 进度条行：品牌渐变填充 + 高亮数字，已涂 X / 应涂 N。 */
+@Composable
+private fun ProgressRow(filled: Int, total: Int, fraction: Float) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(10.dp)
+                .clip(RoundedCornerShape(5.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                    .fillMaxHeight()
+                    .background(Brush.horizontalGradient(listOf(Coral, GlowPurple, Cyan))),
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
         Text(
-            label,
+            "已涂 $filled / $total",
             style = MaterialTheme.typography.bodySmall,
-            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = FontWeight.Bold,
+            color = Ink,
         )
     }
 }
+
+/** 宽屏侧栏的小节标题。 */
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp),
+    )
+}
+
+/**
+ * 填色工具组：✏ 涂黑笔（点黑格即清除）/ ✕ 留白标记。
+ * 统一用分段控件（SegmentedControl）：选中段品牌渐变高亮，游戏机按键感。
+ */
+@Composable
+private fun ToolGroup(
+    selected: PaintTool,
+    enabled: Boolean,
+    onSelect: (PaintTool) -> Unit,
+    stacked: Boolean,
+) {
+    SegmentedControl(
+        items = listOf(
+            PaintTool.FILL to "✏️ 涂黑 / 清除",
+            PaintTool.EMPTY to "✕ 留白",
+        ),
+        selected = selected,
+        enabled = enabled,
+        onSelect = onSelect,
+    )
+}
+
+/**
+ * 操作组：撤销 / 重做 / 重置。
+ * stacked=true 竖排（宽屏侧栏）；false 横排三等分（竖屏）。
+ */
+@Composable
+private fun ActionGroup(
+    canUndo: Boolean,
+    canRedo: Boolean,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onReset: () -> Unit,
+    stacked: Boolean,
+) {
+    if (stacked) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ActionPill("↩ 撤销", canUndo, Modifier.fillMaxWidth(), onUndo)
+            ActionPill("↪ 重做", canRedo, Modifier.fillMaxWidth(), onRedo)
+            ActionPill("↺ 重置", true, Modifier.fillMaxWidth(), onReset)
+        }
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            ActionPill("↩ 撤销", canUndo, Modifier.weight(1f), onUndo)
+            ActionPill("↪ 重做", canRedo, Modifier.weight(1f), onRedo)
+            ActionPill("↺ 重置", true, Modifier.weight(1f), onReset)
+        }
+    }
+}
+
+@Composable
+private fun ActionPill(
+    text: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier,
+        shape = RoundedCornerShape(50),
+        color = if (enabled) MaterialTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = if (enabled) MaterialTheme.colorScheme.onPrimaryContainer
+        else MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Text(
+            text,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .padding(horizontal = 8.dp, vertical = 8.dp)
+                .fillMaxWidth(),
+        )
+    }
+}
+
+/**
+ * 辅助组：检查错误 / 参考答案 / 一键补齐（额度制）。
+ * 检查中时整行替换为"检查结果条"（清除错误格 / 收起）。
+ */
+@Composable
+private fun AssistGroup(
+    stacked: Boolean,
+    checkEnabled: Boolean,
+    fillEnabled: Boolean,
+    fillQuota: Int,
+    checkedWrong: Set<Pair<Int, Int>>?,
+    onCheck: () -> Unit,
+    onShowAnswer: () -> Unit,
+    onFill: () -> Unit,
+    onClearWrong: () -> Unit,
+    onDismissCheck: () -> Unit,
+) {
+    if (checkedWrong != null) {
+        CheckResultBar(
+            wrongCount = checkedWrong.size,
+            onClearWrong = onClearWrong,
+            onDismiss = onDismissCheck,
+        )
+        return
+    }
+    if (stacked) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Button(
+                onClick = onFill,
+                enabled = fillEnabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Coral,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    if (fillQuota > 0) "⚡ 一键补齐（剩 $fillQuota 次）" else "⚡ 一键补齐（次数已用完）",
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = onCheck,
+                    enabled = checkEnabled,
+                    modifier = Modifier.weight(1f),
+                ) { Text("🔍 检查错误") }
+                OutlinedButton(
+                    onClick = onShowAnswer,
+                    modifier = Modifier.weight(1f),
+                ) { Text("参考答案") }
+            }
+        }
+    } else {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            OutlinedButton(
+                onClick = onCheck,
+                enabled = checkEnabled,
+                modifier = Modifier.weight(1f),
+            ) { Text("🔍 检查", maxLines = 1) }
+            OutlinedButton(
+                onClick = onShowAnswer,
+                modifier = Modifier.weight(1f),
+            ) { Text("参考答案", maxLines = 1) }
+            Button(
+                onClick = onFill,
+                enabled = fillEnabled,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Coral,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                modifier = Modifier.weight(1.2f),
+            ) {
+                Text(
+                    if (fillQuota > 0) "⚡ 补齐 $fillQuota" else "⚡ 补齐",
+                    maxLines = 1,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
+    }
+}
+
+/** 检查结果条：显示错误数 + "清除错误格" + "收起"。 */
+@Composable
+private fun CheckResultBar(
+    wrongCount: Int,
+    onClearWrong: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                if (wrongCount > 0) "✗ 检查到 $wrongCount 处错误"
+                else "✓ 检查：目前全对",
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            if (wrongCount > 0) {
+                TextButton(
+                    onClick = onClearWrong,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("清除错误格") }
+            }
+            TextButton(onClick = onDismiss) { Text("收起") }
+        }
+    }
+}
+
+// ============================================================
+// 全屏结算遮罩（居中 + 自适应 + 可滚动，任何窗口尺寸都完整显示）
+// ============================================================
 
 /** 通关结算：全屏遮罩 + 飘落彩纸 + 大号像素画揭晓。 */
 @Composable
@@ -448,35 +837,51 @@ private fun WinOverlay(
     onNextLevel: (() -> Unit)?,
     onBack: () -> Unit,
 ) {
-    Box(
+    var showZoomed by remember { mutableStateOf(false) }
+
+    // heightIn(max) 限制卡片不超过屏幕：小窗口下内容改为内部滚动，保证卡片始终水平垂直居中
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0x99000000)),
-        contentAlignment = Alignment.Center,
     ) {
         // 飘落彩纸（背景层）
         Confetti(modifier = Modifier.fillMaxSize())
 
         Card(
             modifier = Modifier
-                .fillMaxWidth(0.86f)
-                .padding(vertical = 16.dp),
+                .align(Alignment.Center)
+                .fillMaxWidth(0.88f)
+                .heightIn(max = maxHeight - 24.dp)
+                .border(
+                    width = 1.dp,
+                    brush = Brush.linearGradient(
+                        listOf(
+                            Coral.copy(alpha = 0.55f),
+                            GlowPurple.copy(alpha = 0.55f),
+                            Cyan.copy(alpha = 0.55f),
+                        ),
+                    ),
+                    shape = RoundedCornerShape(24.dp),
+                ),
             shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
         ) {
             Column(
-                modifier = Modifier.padding(20.dp),
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(22.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("🎉 太棒了！", fontSize = 30.sp, fontWeight = FontWeight.Black, color = Ink)
+                Text("🎉 太棒了！", fontSize = 28.sp, fontWeight = FontWeight.Black, color = Ink)
                 Text(
                     "成功还原「${level.name}」",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(top = 2.dp),
                 )
 
-                Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
                 Surface(
                     shape = RoundedCornerShape(50),
@@ -500,10 +905,12 @@ private fun WinOverlay(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
-                // 揭晓的大号像素画
+                // 揭晓的大号像素画：宽度自适应卡片，封顶 180dp（小屏不溢出、大屏不虚大）
                 Box(
                     modifier = Modifier
-                        .size(190.dp)
+                        .fillMaxWidth(0.62f)
+                        .widthIn(max = 180.dp)
+                        .aspectRatio(1f)
                         .clip(RoundedCornerShape(14.dp))
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                     contentAlignment = Alignment.Center,
@@ -516,15 +923,72 @@ private fun WinOverlay(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(8.dp))
 
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onReplay) { Text("再来一局") }
+                // 棋盘预览偏小时提供"放大查看"全屏模式（可缩放/平移），大棋盘也能看清图案
+                TextButton(onClick = { showZoomed = true }) {
+                    Text("🔍 放大查看图案", fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    OutlinedButton(
+                        onClick = onReplay,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("再来一局") }
                     if (onNextLevel != null) {
-                        Button(onClick = onNextLevel) { Text("下一关") }
+                        GradientButton(
+                            text = "下一关 ▶",
+                            onClick = onNextLevel,
+                            modifier = Modifier.weight(1.3f),
+                        )
                     }
                 }
                 TextButton(onClick = onBack) { Text("返回关卡列表") }
+            }
+        }
+
+        // —— 全屏放大查看像素画：双指缩放 + 拖动平移 + 右上角关闭 ——
+        if (showZoomed) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xF2111118)),
+                contentAlignment = Alignment.Center,
+            ) {
+                BoardView(
+                    level = level,
+                    board = level.answerGrid,
+                    satisfiedClues = emptySet(),
+                    showClues = false,
+                    interactive = false,
+                    zoomable = true,
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .padding(vertical = 20.dp),
+                )
+                Surface(
+                    onClick = { showZoomed = false },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp),
+                    shape = CircleShape,
+                    color = Color(0xD9262338),
+                    contentColor = Color(0xFFF0EFFB),
+                    border = BorderStroke(1.dp, Color(0x33FFFFFF)),
+                    shadowElevation = 4.dp,
+                ) {
+                    Box(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("✕", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
             }
         }
     }
@@ -537,22 +1001,29 @@ private fun TimeoutOverlay(
     onReplay: () -> Unit,
     onBack: () -> Unit,
 ) {
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color(0x99000000)),
-        contentAlignment = Alignment.Center,
     ) {
         Card(
             modifier = Modifier
+                .align(Alignment.Center)
                 .fillMaxWidth(0.86f)
-                .padding(vertical = 16.dp),
+                .heightIn(max = maxHeight - 24.dp)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.4f),
+                    shape = RoundedCornerShape(24.dp),
+                ),
             shape = RoundedCornerShape(24.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text("⏰", fontSize = 44.sp)
@@ -560,7 +1031,7 @@ private fun TimeoutOverlay(
                     "挑战失败！",
                     fontSize = 28.sp,
                     fontWeight = FontWeight.Black,
-                    color = Color(0xFFB71C1C),
+                    color = MaterialTheme.colorScheme.error,
                 )
                 Text(
                     "「${level.name}」超时未完成\n再来一局，或者返回列表换一关",
