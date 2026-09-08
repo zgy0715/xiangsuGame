@@ -2,40 +2,47 @@ package com.example.xiangsugame
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import com.example.xiangsugame.api.ApiClient
+import com.example.xiangsugame.auth.AuthManager
 import com.example.xiangsugame.model.GameMode
 import com.example.xiangsugame.model.Level
 import com.example.xiangsugame.model.Levels
-import com.example.xiangsugame.model.UserRole
+import com.example.xiangsugame.ui.BattleHomeScreen
 import com.example.xiangsugame.ui.GameScreen
+import com.example.xiangsugame.ui.HallScreen
 import com.example.xiangsugame.ui.HomeScreen
+import com.example.xiangsugame.ui.LeaderboardScreen
 import com.example.xiangsugame.ui.LoginScreen
+import com.example.xiangsugame.ui.SettingsScreen
 import com.example.xiangsugame.ui.theme.XiangsuGameTheme
+import kotlinx.coroutines.launch
 
-/**
- * 应用唯一入口 Activity。
- * 职责很简单：开启 edge-to-edge 沉浸式显示，把 Compose 内容挂到窗口上，
- * 并包上一层应用主题（XiangsuGameTheme）。
- */
+/** 应用唯一入口 Activity。 */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        AppGraph.init(applicationContext) // 单例容器:设置/会话/网络/仓库
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+        )
         setContent {
             XiangsuGameTheme {
-                // 用带主题背景色的 Surface 包住整棵 Compose 树，
-                // edge-to-edge 下内容区域也始终是游戏底色，不会有系统默认白底漏出
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
@@ -48,59 +55,108 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * 应用内简单页面导航（暂用状态切换，后续可替换为 Navigation 组件）。
- *
- * 流程：登录页（选身份）→ 首页（关卡网格 + 进度 + 模式选择）→ 游戏页（带关卡与模式）。
- *  - Screen.Login  → 登录页，选定身份后进入首页；
- *  - Screen.Home   → 首页（HomeScreen），关卡网格 + 进度 + 身份徽章 + 模式选择；
- *  - Screen.Game   → 游戏页（GameScreen），携带要玩的关卡与所选模式。
- * 进度（GameProgress）在应用生命周期内单例化，通关后持久化到 SharedPreferences，
- * 返回首页时关卡网格自动反映最新解锁/通关状态。
+ * 根导航 —— 简单栈式路由:
+ * 未登录 → Login;登录后自动进入 Main(首页);各页 push / pop,系统返回键出栈;
+ * 登出/401 由 session 置空驱动整体回登录页。
  */
 @Composable
 fun XiangsuGameApp() {
-    val context = LocalContext.current
-    // 关卡进度：应用生命周期内保持同一实例；内部是 Compose 可观察状态
-    val progress = remember { GameProgress(context.applicationContext) }
     val levels = remember { Levels.all }
-    // 当前登录身份：未登录前恒为 null（登录页），登录后传给首页/游戏页
-    var role by remember { mutableStateOf<UserRole?>(null) }
-    var screen by remember { mutableStateOf<Screen>(Screen.Login) }
+    var stack by remember { mutableStateOf(listOf<Screen>(Screen.Login)) }
+    val current = stack.last()
+    val push: (Screen) -> Unit = { stack = stack + it }
+    val pop: () -> Unit = { if (stack.size > 1) stack = stack.dropLast(1) }
 
-    when (val s = screen) {
-        Screen.Login -> LoginScreen(
-            onLogin = {
-                role = it
-                screen = Screen.Home
-            },
+    // —— 登录态驱动:登录成功 → 首页;登出 → 登录页 ——
+    val logged = AuthManager.session != null
+    LaunchedEffect(logged) {
+        if (logged && current is Screen.Login) stack = listOf(Screen.Main)
+        if (!logged && current !is Screen.Login) stack = listOf(Screen.Login)
+    }
+    // 会话被服务端判失效(401)时 AuthManager 由各调用点 logout(),同上处理
+    BackHandler(enabled = stack.size > 1 && current !is Screen.Login) { pop() }
+
+    val userId = AuthManager.session?.userId
+    val account = if (userId != null) AppGraph.account(userId) else null
+    val scope = rememberCoroutineScope()
+
+    // —— 账号初始化:每日登录奖励 + 孤儿通关清洗 ——
+    LaunchedEffect(userId) {
+        if (userId != null) {
+            AppGraph.account(userId).grantDailyBonusIfNewDay()
+            AppGraph.account(userId).pruneCompleted(levels.map { it.id }.toSet())
+        }
+    }
+
+    when (val s = current) {
+        Screen.Login -> LoginScreen()
+
+        Screen.Main -> {
+            if (account != null) {
+                HomeScreen(
+                    levels = levels,
+                    account = account,
+                    onPlayLevel = { level, mode -> push(Screen.Game(level, mode)) },
+                    onPlayDaily = { level -> push(Screen.Game(level, GameMode.FREE)) },
+                    onOpenHall = { push(Screen.Hall) },
+                    onOpenLeaderboard = { push(Screen.Leaderboard) },
+                    onOpenBattle = { push(Screen.BattleHome) },
+                    onOpenSettings = { push(Screen.Settings) },
+                    onLogout = { AuthManager.logout() },
+                )
+            }
+        }
+
+        Screen.Hall -> HallScreen(
+            onPlay = { level -> push(Screen.Game(level, GameMode.FREE)) },
+            onBack = pop,
         )
-        Screen.Home -> HomeScreen(
-            levels = levels,
-            progress = progress,
-            role = role ?: UserRole.PLAYER,
-            onPlayLevel = { level, mode -> screen = Screen.Game(level, mode) },
-            onLogout = { screen = Screen.Login },
-        )
+
+        Screen.Leaderboard -> LeaderboardScreen(onBack = pop)
+
+        Screen.BattleHome -> BattleHomeScreen(onBack = pop)
+
+        Screen.Settings -> SettingsScreen(onBack = pop)
+
         is Screen.Game -> {
-            // 计算"下一关"：本关在关卡列表中之后还有一关即可跳转（顺序解锁）
-            val index = levels.indexOfFirst { it.id == s.level.id }
-            val nextLevel = if (index in 0 until levels.lastIndex) levels[index + 1] else null
-            GameScreen(
-                level = s.level,
-                progress = progress,
-                mode = s.mode,
-                role = role ?: UserRole.PLAYER,
-                onBack = { screen = Screen.Home },
-                // 下一关沿用当前选择的模式（限时挑战不中断）
-                onNextLevel = nextLevel?.let { next -> { screen = Screen.Game(next, s.mode) } },
-            )
+            if (account != null) {
+                // 下一关仅对内置顺序关卡有意义(在线关 id 为负,无顺序链)
+                val index = levels.indexOfFirst { it.id == s.level.id }
+                val nextLevel = if (index in 0 until levels.lastIndex) levels[index + 1] else null
+                val online = s.level.id < 0
+                GameScreen(
+                    level = s.level,
+                    account = account,
+                    mode = s.mode,
+                    onBack = pop,
+                    onNextLevel = nextLevel?.let { next -> { push(Screen.Game(next, s.mode)) } },
+                    // 在线单人通关 → 上传成绩到排行榜(失败静默,离线可缓存后再玩)
+                    onSolved = if (online) { _, elapsed ->
+                        scope.launch {
+                            ApiClient.safe {
+                                ApiClient.api().submitRecord(
+                                    com.example.xiangsugame.api.dto.SubmitRecordRequest(
+                                        puzzleId = s.level.id,
+                                        durationMs = elapsed * 1000,
+                                        source = "single",
+                                    ),
+                                )
+                            }
+                        }
+                    } else null,
+                )
+            }
         }
     }
 }
 
-/** 页面类型：Login 为登录页；Home 为首页；Game 携带关卡与模式进入游戏页。 */
+/** 页面类型(栈式)。 */
 private sealed interface Screen {
     data object Login : Screen
-    data object Home : Screen
+    data object Main : Screen
+    data object Hall : Screen
+    data object Leaderboard : Screen
+    data object BattleHome : Screen
+    data object Settings : Screen
     data class Game(val level: Level, val mode: GameMode) : Screen
 }

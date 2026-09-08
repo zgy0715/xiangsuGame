@@ -2,6 +2,7 @@ package com.example.xiangsugame.ui
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,21 +18,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -39,220 +42,363 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.xiangsugame.GameProgress
+import com.example.xiangsugame.api.dto.toModel
+import com.example.xiangsugame.auth.AuthManager
+import com.example.xiangsugame.data.AccountStore
+import com.example.xiangsugame.data.Dates
+import com.example.xiangsugame.data.LocalSettings
+import com.example.xiangsugame.data.PuzzleRepository
 import com.example.xiangsugame.model.GameMode
 import com.example.xiangsugame.model.Level
-import com.example.xiangsugame.model.UserRole
 import com.example.xiangsugame.ui.theme.Amber
 import com.example.xiangsugame.ui.theme.Cocoa
 import com.example.xiangsugame.ui.theme.Coral
+import com.example.xiangsugame.ui.theme.GlowPurple
 import com.example.xiangsugame.ui.theme.Ink
-import com.example.xiangsugame.ui.theme.Sand
+import kotlinx.coroutines.launch
 
 /**
- * 首页（关卡选择）—— 游戏化改版 + 双身份权限 + 模式选择。
- *
- * 布局自上而下：
- *  - 标题区：暖色渐变背景 + 大标题 + 身份徽章（👤玩家 / 👑管理员）与"切换身份"；
- *  - 模式选择：🎮 自由模式 / ⏱ 限时模式 两个可切换胶囊；
- *  - 通关进度卡：进度条 + X/N，有"收集感"；
- *  - 关卡网格：每张卡片带难度星级、锁定/通关状态；管理员全局解锁（含隐藏关），
- *    隐藏关用金色描边 + 🌟隐藏 标注；通关的关卡揭晓像素画，未完成的只给"？"。
+ * 首页中枢 —— 深夜画室风,单张 LazyVerticalGrid 纵向滚动:
+ *  - 渐变 Hero:标题 + 账号昵称 + 补齐额度 + 切换账号;
+ *  - 登录用户:在线入口四宫格(每日一题/在线题库/排行榜/对战)+ 每日一题卡;
+ *  - 游客:仅内置关卡,提示可去登录;
+ *  - 模式分段(自由/限时)+ 内置关卡网格(顺序解锁)。
  */
 @Composable
 fun HomeScreen(
     levels: List<Level>,
-    progress: GameProgress,
-    role: UserRole,
+    account: AccountStore,
     onPlayLevel: (Level, GameMode) -> Unit,
+    onPlayDaily: (Level) -> Unit,
+    onOpenHall: () -> Unit,
+    onOpenLeaderboard: () -> Unit,
+    onOpenBattle: () -> Unit,
+    onOpenSettings: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val completedCount = progress.completedLevels.size
-    val isAdmin = role == UserRole.ADMIN
-    // 当前选中的模式：进关时把模式和关卡一起交给游戏页
+    val nickname = AuthManager.session?.nickname ?: "玩家${account.userId}"
+    val isGuest = AuthManager.isGuest
+    val demoUnlocked = LocalSettings.demoAllUnlocked
+    val completedCount = account.completedLevels.size
     var gameMode by remember { mutableStateOf(GameMode.FREE) }
-    val bg = Brush.verticalGradient(listOf(Color(0xFFF3F0FF), Color(0xFFF8F6FF)))
+    val scope = rememberCoroutineScope()
 
-    Column(
+    // —— 每日一题(在线拉取;失败仅提示可重试,不阻塞离线玩法)——
+    var daily by remember { mutableStateOf<Level?>(null) }
+    var dailyDone by remember { mutableStateOf(false) }
+    var dailyLoading by remember { mutableStateOf(true) }
+    var dailyError by remember { mutableStateOf(false) }
+
+    suspend fun loadDaily() {
+        dailyLoading = true
+        dailyError = false
+        val today = Dates.todayIso()
+        val result = PuzzleRepository.fetchDaily(today)
+        result.onSuccess {
+            daily = it.level.toModel()
+            // 本地没解过的缓存关再点会重玩;已解则提示去排行榜
+            dailyDone = false
+        }.onFailure { daily = null; dailyError = true }
+        dailyLoading = false
+    }
+
+    LaunchedEffect(Unit) { if (!isGuest) loadDaily() }
+
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 160.dp),
         modifier = modifier
             .fillMaxSize()
-            .background(bg)
-            .systemBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 14.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .background(MaterialTheme.colorScheme.background)
+            .systemBarsPadding(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 30.dp),
     ) {
-        // —— 标题 ——
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("🧩", fontSize = 30.sp)
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                "像素填空",
-                fontSize = 36.sp,
-                fontWeight = FontWeight.Black,
-                color = Ink,
+        // —— 渐变 Hero(占满一行)——
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            HeroHeader(
+                nickname = nickname,
+                completedCount = completedCount,
+                totalLevels = levels.size,
+                quotaRemaining = account.fillQuotaRemaining,
+                onLogout = onLogout,
             )
         }
-        Text(
-            "Fill-a-Pix · 用数字线索还原像素画",
-            fontSize = 13.sp,
-            color = Cocoa,
-            modifier = Modifier.padding(top = 2.dp),
-        )
 
-        // —— 身份徽章 + 切换身份 ——
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = if (isAdmin) Amber.copy(alpha = 0.28f) else Color.White,
-                contentColor = Ink,
-            ) {
+        if (isGuest) {
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                GuestBanner(onLogin = onLogout)
+            }
+        } else {
+            // —— 在线入口 ——
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "在线玩法",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Ink,
+                        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    TextButton(onClick = onOpenSettings) {
+                        Text("⚙ 设置", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    QuickTile("每日一题", "🌅", Modifier.weight(1f)) {
+                        when {
+                            daily != null -> onPlayDaily(daily!!)
+                            dailyLoading -> Unit
+                            else -> scope.launch { loadDaily() }
+                        }
+                    }
+                    QuickTile("在线题库", "🎲", Modifier.weight(1f), onOpenHall)
+                    QuickTile("排行榜", "🏆", Modifier.weight(1f), onOpenLeaderboard)
+                    QuickTile("对战", "⚔️", Modifier.weight(1f), onOpenBattle)
+                }
+            }
+
+            // —— 每日一题卡 ——
+            item(span = { GridItemSpan(maxLineSpan) }) {
+                when {
+                    dailyLoading -> DailyCard(
+                        emoji = "🌅", title = "每日一题", subtitle = "连线服务器中…",
+                        trailing = { CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp) },
+                    )
+                    daily != null -> DailyCard(
+                        emoji = "🌅",
+                        title = "今日谜题 · ${daily!!.difficulty.label} ${daily!!.rows}×${daily!!.cols}",
+                        subtitle = "${Dates.todayIso()} · 全服同题 · 谁最快谁上榜",
+                        onClick = { onPlayDaily(daily!!) },
+                    )
+                    else -> DailyCard(
+                        emoji = "🌅",
+                        title = "每日一题",
+                        subtitle = "离线中,点此重试连接服务器",
+                        onClick = { scope.launch { loadDaily() } },
+                    )
+                }
+            }
+        }
+
+        // —— 模式分段 + 内置关卡 ——
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            SegmentedControl(
+                items = listOf(
+                    GameMode.FREE to "🎮 自由模式",
+                    GameMode.TIMED to "⏱ 限时模式",
+                ),
+                selected = gameMode,
+                onSelect = { gameMode = it },
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+        item(span = { GridItemSpan(maxLineSpan) }) {
+            Text(
+                "内置闯关",
+                style = MaterialTheme.typography.titleMedium,
+                color = Ink,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        items(levels, key = { it.id }) { level ->
+            StageCard(
+                level = level,
+                unlocked = demoUnlocked || account.isUnlocked(level.id),
+                completed = level.id in account.completedLevels,
+                onClick = { onPlayLevel(level, gameMode) },
+            )
+        }
+    }
+}
+
+/** Hero 头卡:标题 + 账号信息胶囊 + 进度条。 */
+@Composable
+private fun HeroHeader(
+    nickname: String,
+    completedCount: Int,
+    totalLevels: Int,
+    quotaRemaining: Int,
+    onLogout: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(24.dp))
+            .background(
+                Brush.linearGradient(
+                    listOf(Color(0xFF7A68F2), Color(0xFF5647C9), Color(0xFF3B2E8F)),
+                ),
+            ),
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("🧩", fontSize = 24.sp)
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    if (isAdmin) "👑 管理员" else "👤 玩家",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
+                    "像素填空",
+                    fontSize = 24.sp,
+                    fontWeight = FontWeight.Black,
+                    color = Color.White,
                 )
+                Spacer(modifier = Modifier.weight(1f))
+                TextButton(
+                    onClick = onLogout,
+                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                        contentColor = Color(0xE6FFFFFF),
+                    ),
+                ) { Text("切换账号", fontWeight = FontWeight.SemiBold) }
             }
-            Spacer(modifier = Modifier.weight(1f))
-            TextButton(onClick = onLogout) { Text("切换身份") }
-        }
+            Spacer(modifier = Modifier.height(14.dp))
 
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // —— 模式选择 ——
-        ModeSelector(selected = gameMode, onSelect = { gameMode = it })
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // —— 通关进度卡 ——
-        ProgressCard(completed = completedCount, total = levels.size)
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // —— 关卡区块 ——
-        Text(
-            "选择关卡",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 10.dp),
-        )
-
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 150.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(bottom = 28.dp),
-        ) {
-            items(levels, key = { it.id }) { level ->
-                StageCard(
-                    level = level,
-                    unlocked = isAdmin || progress.isUnlocked(level.id),
-                    completed = level.id in progress.completedLevels,
-                    onClick = { onPlayLevel(level, gameMode) },
-                )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                GlassChip("👤 $nickname")
+                GlassChip("⚡ 补齐 $quotaRemaining 次")
             }
-        }
-    }
-}
 
-/** 顶部模式选择：两个胶囊，选中高亮，切关时带入选中的模式。 */
-@Composable
-private fun ModeSelector(selected: GameMode, onSelect: (GameMode) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        ModePill(
-            text = "🎮 自由模式",
-            selected = selected == GameMode.FREE,
-            onClick = { onSelect(GameMode.FREE) },
-        )
-        ModePill(
-            text = "⏱ 限时模式",
-            selected = selected == GameMode.TIMED,
-            onClick = { onSelect(GameMode.TIMED) },
-        )
-    }
-}
+            Spacer(modifier = Modifier.height(14.dp))
 
-@Composable
-private fun ModePill(text: String, selected: Boolean, onClick: () -> Unit) {
-    Surface(
-        onClick = onClick,
-        shape = RoundedCornerShape(50),
-        color = if (selected) Coral else Color.White,
-        contentColor = if (selected) Color.White else Cocoa,
-        shadowElevation = if (selected) 2.dp else 0.dp,
-    ) {
-        Text(
-            text,
-            fontSize = 14.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-    }
-}
-
-/** 顶部通关进度卡：进度条 + X / N，通关全部有庆祝文案。 */
-@Composable
-private fun ProgressCard(completed: Int, total: Int) {
-    val fraction = if (total == 0) 0f else completed.toFloat() / total
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "通关进度",
-                    style = MaterialTheme.typography.titleMedium,
+                    "内置关卡通关",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
-                    "$completed / $total",
+                    "$completedCount / $totalLevels",
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.ExtraBold,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = Color.White,
                 )
             }
-            Spacer(modifier = Modifier.height(10.dp))
-            LinearProgressIndicator(
-                progress = { fraction },
+            Spacer(modifier = Modifier.height(8.dp))
+            val fraction = if (totalLevels == 0) 0f else completedCount.toFloat() / totalLevels
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(10.dp)
-                    .clip(RoundedCornerShape(5.dp)),
-                color = Coral,
-                trackColor = Sand,
-            )
-            Spacer(modifier = Modifier.height(8.dp))
+                    .clip(RoundedCornerShape(5.dp))
+                    .background(Color(0x33FFFFFF)),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth(fraction.coerceIn(0f, 1f))
+                        .matchParentSize()
+                        .background(
+                            Brush.horizontalGradient(
+                                listOf(Color(0xFFFFE29A), Color(0xFFFFFFFF)),
+                            ),
+                        ),
+                )
+            }
             Text(
-                if (completed == total) "🎉 全部通关，你已经是个像素大师了！"
-                else "每解开一关，就能看到一幅像素画",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                if (completedCount == totalLevels) "🎉 内置关全通,去在线题库与每日一题继续挑战!"
+                else "每解开一关,就能看到一幅像素画",
+                fontSize = 11.sp,
+                color = Color(0xCCFFFFFF),
+                modifier = Modifier.padding(top = 8.dp),
             )
         }
     }
 }
 
-/**
- * 单个关卡卡片。
- *  - 未解锁：置灰 + 🔒，不可点；隐藏关未解锁时提示"需通关全部 10 关"；
- *  - 已解锁未通关：浅色"？"谜底 + ▶，点进去玩；
- *  - 已通关：清晰揭晓像素画缩略图 + ✅ + 图案名；
- *  - 隐藏关：金色描边 + 🌟隐藏 标注，管理员可直接解锁进入。
- */
+/** 功能入口小卡。 */
+@Composable
+private fun QuickTile(
+    title: String,
+    emoji: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0x1FFFFFFF)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(emoji, fontSize = 24.sp)
+            Text(
+                title,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = Ink,
+                modifier = Modifier.padding(top = 6.dp),
+            )
+        }
+    }
+}
+
+/** 每日一题展示卡(loading / 就绪 / 失败三种)。 */
+@Composable
+private fun DailyCard(
+    emoji: String,
+    title: String,
+    subtitle: String,
+    onClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Coral.copy(alpha = 0.25f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(emoji, fontSize = 26.sp)
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    title,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Ink,
+                )
+                Text(
+                    subtitle,
+                    fontSize = 11.sp,
+                    color = Cocoa,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            if (trailing != null) {
+                trailing()
+            } else {
+                Text("▶", fontSize = 18.sp, color = Coral)
+            }
+        }
+    }
+}
+
+/** 单个关卡卡片:未解锁暗灰 🔒 / 已解锁未通关"?"谜底 / 已通关点亮描边揭晓图案。 */
 @Composable
 private fun StageCard(
     level: Level,
@@ -260,33 +406,38 @@ private fun StageCard(
     completed: Boolean,
     onClick: () -> Unit,
 ) {
-    val cardBg = if (unlocked) {
-        Brush.verticalGradient(listOf(Color(0xFFFFFFFF), Color(0xFFF0EDFF)))
-    } else {
-        Brush.verticalGradient(listOf(Color(0xFFF2F1F6), Color(0xFFE6E4EE)))
-    }
-
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = unlocked, onClick = onClick),
+            .clickable(enabled = unlocked, onClick = onClick)
+            .border(
+                width = 1.dp,
+                color = if (completed) Coral.copy(alpha = 0.45f) else Color.Transparent,
+                shape = RoundedCornerShape(18.dp),
+            ),
         shape = RoundedCornerShape(18.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = if (unlocked) 2.dp else 0.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        border = if (level.isHidden) BorderStroke(1.5.dp, Amber) else null,
+        colors = CardDefaults.cardColors(
+            containerColor = if (unlocked) MaterialTheme.colorScheme.surface
+            else Color(0xFF15131F),
+        ),
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(cardBg)
                 .padding(14.dp),
         ) {
-            // —— 头部：序号徽章 + 星级 + 状态 ——
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(28.dp)
-                        .background(if (unlocked) Coral else Color(0xFFB8B4C9), CircleShape),
+                        .background(
+                            if (unlocked) Brush.linearGradient(listOf(Coral, GlowPurple))
+                            else Brush.linearGradient(
+                                listOf(Color(0xFF3A3654), Color(0xFF3A3654)),
+                            ),
+                            CircleShape,
+                        ),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -300,12 +451,13 @@ private fun StageCard(
                 Text(
                     "第 ${level.id} 关",
                     style = MaterialTheme.typography.titleMedium,
+                    color = if (unlocked) Ink else Color(0xFF7A7599),
                 )
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
                     "★".repeat(level.difficulty.stars),
                     fontSize = 13.sp,
-                    color = if (unlocked) Amber else Color(0xFFCCC8DC),
+                    color = if (unlocked) Amber else Color(0xFF565279),
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
@@ -320,10 +472,10 @@ private fun StageCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // —— 预览区：通关揭晓像素画，未通关给"？"谜底 ——
             val previewModifier = Modifier
                 .size(72.dp)
                 .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -338,48 +490,29 @@ private fun StageCard(
                 } else {
                     Box(modifier = previewModifier) {
                         if (unlocked) {
-                            // 已解锁未通关：半透明白幕下透出一丝轮廓 + "？"，勾起好奇心
                             PicturePreview(
                                 answer = level.answerGrid,
                                 modifier = Modifier.matchParentSize(),
-                                filledColor = Color(0xFFC4BFD9),
+                                filledColor = Color(0xFF2E2B45),
                             )
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()
-                                    .background(Color(0x80FFFFFF)),
+                                    .background(Color(0x59100E1C)),
                             )
                             Text(
                                 "？",
                                 fontSize = 30.sp,
                                 fontWeight = FontWeight.Black,
-                                color = Color(0xFFB4AECE),
+                                color = Color(0xFF8F89BC),
                                 modifier = Modifier.align(Alignment.Center),
                             )
                         } else {
-                            Box(
-                                modifier = Modifier
-                                    .matchParentSize()
-                                    .background(Color(0xFFE9E7F0)),
+                            Text(
+                                "🔒",
+                                fontSize = 22.sp,
+                                modifier = Modifier.align(Alignment.Center),
                             )
-                            if (level.isHidden) {
-                                // 隐藏关：明确告知解锁条件
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("🔒", fontSize = 18.sp)
-                                    Text(
-                                        "需通关全部 10 关",
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF8F8BA4),
-                                    )
-                                }
-                            } else {
-                                Text(
-                                    "🔒",
-                                    fontSize = 22.sp,
-                                    modifier = Modifier.align(Alignment.Center),
-                                )
-                            }
                         }
                     }
                 }
@@ -387,23 +520,61 @@ private fun StageCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // —— 底部信息 ——
             Text(
-                buildString {
-                    append("${level.difficulty.label} · ${level.rows}×${level.cols}")
-                    if (level.isHidden) append(" · 🌟隐藏")
-                },
+                "${level.difficulty.label} · ${level.rows}×${level.cols}",
                 style = MaterialTheme.typography.bodySmall,
-                color = if (unlocked) Cocoa else Color(0xFFA8A4BD),
+                color = if (unlocked) Cocoa else Color(0xFF7A7599),
             )
             if (completed) {
                 Text(
-                    "图案：${level.name}",
+                    "图案:${level.name}",
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = Coral,
                     modifier = Modifier.padding(top = 2.dp),
                 )
+            }
+        }
+    }
+}
+
+/** 游客模式提示条:说明仅内置关卡,引导登录联网玩法。 */
+@Composable
+private fun GuestBanner(onLogin: () -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp)),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, Color(0x1FFFFFFF)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("👤", fontSize = 26.sp)
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "游客模式",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Ink,
+                )
+                Text(
+                    "仅内置关卡 · 登录后可玩每日一题、排行榜、对战",
+                    fontSize = 11.sp,
+                    color = Cocoa,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            TextButton(onClick = onLogin) {
+                Text("去登录", fontWeight = FontWeight.Bold)
             }
         }
     }

@@ -6,6 +6,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -21,20 +22,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,137 +43,248 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.xiangsugame.api.ApiClient
+import com.example.xiangsugame.auth.AuthManager
+import com.example.xiangsugame.data.LocalSettings
 import com.example.xiangsugame.model.Levels
-import com.example.xiangsugame.model.UserRole
-import com.example.xiangsugame.ui.theme.Amber
 import com.example.xiangsugame.ui.theme.Cocoa
-import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Ink
-
-/** 管理员默认密码（课程项目固定，README 注明）。 */
-private const val ADMIN_PASSWORD = "admin"
+import kotlinx.coroutines.launch
 
 /**
- * 登录页 —— 游戏开场页 + 双身份权限系统入口。
- *
- * 上半部分是品牌 Hero（靛紫渐变 + 真实关卡图案的像素画装饰 + 大标题），
- * 下半部分是两个身份卡片：
- *  - 玩家：点一下即进入，顺序解锁、无特权；
- *  - 管理员：需输入密码（默认 admin），全局解锁全部关卡（含隐藏关）。
- * 回调 [onLogin] 把所选身份交给上层决定后续导航。
+ * 登录页 —— 一键"微信授权登录"(连服务器);连不上服务器可直接「游客进入」离线玩。
+ * 登录成功 / 游客进入后由根导航监听 AuthManager.session 自动进首页。
  */
 @Composable
 fun LoginScreen(
-    onLogin: (UserRole) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var password by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf(false) }
-    val bg = Brush.verticalGradient(listOf(Color(0xFFF3F0FF), Color(0xFFF7F5FF)))
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var showServerDialog by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun doLogin() {
+        if (busy) return
+        busy = true
+        error = null
+        scope.launch {
+            AuthManager.loginMockWechat()
+                .onFailure { error = it.message ?: "登录失败,请检查服务器连接" }
+            busy = false
+        }
+    }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(bg)
+            .background(Brush.verticalGradient(listOf(Color(0xFF171531), Color(0xFF100E1C))))
             .systemBarsPadding()
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // —— 品牌 Hero：渐变 + 像素画装饰 + 大标题 ——
+        // —— 品牌 Hero:渐变 + 光斑 + 像素画装饰 + 大标题 ——
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(bottomStart = 30.dp, bottomEnd = 30.dp))
+                .clip(RoundedCornerShape(bottomStart = 32.dp, bottomEnd = 32.dp))
                 .background(
                     Brush.verticalGradient(
-                        listOf(Color(0xFF8A6CF9), Color(0xFF5E5CE6), Color(0xFF4A3B9E)),
+                        listOf(Color(0xFF7A68F2), Color(0xFF5647C9), Color(0xFF3B2E8F)),
                     ),
                 ),
         ) {
+            Box(
+                modifier = Modifier
+                    .size(150.dp)
+                    .offset(x = (-40).dp, y = (-30).dp)
+                    .background(Brush.radialGradient(listOf(Color(0x3DFFFFFF), Color.Transparent)), CircleShape),
+            )
+            Box(
+                modifier = Modifier
+                    .size(190.dp)
+                    .align(Alignment.BottomEnd)
+                    .offset(x = 50.dp, y = 60.dp)
+                    .background(Brush.radialGradient(listOf(Color(0x33FFE29A), Color.Transparent)), CircleShape),
+            )
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 24.dp, vertical = 30.dp),
+                    .padding(horizontal = 24.dp, vertical = 32.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                // 三幅真实关卡图案的像素画（心 / 笑脸 / 蝴蝶），带轻微浮动动画
                 FloatingPixelRow()
-                Spacer(modifier = Modifier.height(20.dp))
+                Spacer(modifier = Modifier.height(22.dp))
                 Text(
                     "像素填空",
                     fontSize = 42.sp,
                     fontWeight = FontWeight.Black,
                     color = Color.White,
+                    letterSpacing = 2.sp,
                 )
                 Text(
-                    "Fill-a-Pix · 用数字线索还原像素画",
-                    fontSize = 14.sp,
+                    "用数字线索还原像素画",
+                    fontSize = 13.sp,
                     color = Color(0xFFE3DEFF),
                     modifier = Modifier.padding(top = 6.dp),
                 )
             }
         }
 
-        Column(modifier = Modifier.padding(horizontal = 24.dp)) {
-            Text(
-                "选择你的身份进入",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Ink,
-                modifier = Modifier.padding(top = 26.dp, bottom = 14.dp),
-            )
+        Column(
+            modifier = Modifier.padding(horizontal = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(modifier = Modifier.height(30.dp))
 
-            // —— 玩家身份卡：点一下即进 ——
-            RoleCard(
-                emoji = "👤",
-                title = "玩家",
-                desc = "顺序解锁 · 记录进度 · 无特权",
-                accent = Coral,
-                onClick = { onLogin(UserRole.PLAYER) },
-            )
+            // —— 一键微信登录(需连服务器)——
+            val wechatBrush = if (busy) {
+                Brush.verticalGradient(listOf(Color(0xFF5AAE7C), Color(0xFF5AAE7C)))
+            } else {
+                Brush.horizontalGradient(listOf(Color(0xFF4CB964), Color(0xFF28A745)))
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(54.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(wechatBrush)
+                    .clickable(enabled = !busy, onClick = { doLogin() }),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                if (busy) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        color = Color.White,
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                } else {
+                    Text("💬", fontSize = 20.sp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Text(
+                    if (busy) "正在登录…" else "微信授权登录",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Black,
+                    color = Color.White,
+                    letterSpacing = 1.sp,
+                )
+            }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // —— 管理员身份卡：需密码 ——
-            AdminCard(
-                password = password,
-                error = error,
-                onPasswordChange = {
-                    password = it
-                    error = false
-                },
-                onLogin = {
-                    if (password == ADMIN_PASSWORD) {
-                        onLogin(UserRole.ADMIN)
-                    } else {
-                        error = true
-                    }
-                },
-            )
-
-            Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                "课程项目 · 双身份权限系统",
-                fontSize = 11.sp,
-                color = Cocoa,
-                modifier = Modifier.align(Alignment.CenterHorizontally),
-            )
             Spacer(modifier = Modifier.height(12.dp))
+
+            // —— 游客进入(免登录,离线也能玩)——
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(50.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .border(1.dp, Color(0x40FFFFFF), RoundedCornerShape(16.dp))
+                    .clickable(enabled = !busy, onClick = { AuthManager.enterGuest() }),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Text("👤", fontSize = 18.sp)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    "游客进入",
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Ink,
+                )
+            }
+
+            if (error != null) {
+                Text(
+                    "⚠ $error",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(top = 12.dp),
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            // —— 服务器设置入口 ——
+            TextButton(onClick = { showServerDialog = true }) {
+                Text(
+                    "服务器设置 · ${ApiClient.serverHost()}",
+                    fontSize = 12.sp,
+                    color = Cocoa,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(20.dp))
         }
+    }
+
+    if (showServerDialog) {
+        ServerUrlDialog(onDismiss = { showServerDialog = false })
     }
 }
 
-/** 品牌 Hero 里三幅像素画的浮动行（心 / 笑脸 / 蝴蝶），上下轻微浮动增加生命力。 */
+/** 登录页的服务器设置弹窗。 */
+@Composable
+private fun ServerUrlDialog(onDismiss: () -> Unit) {
+    var url by remember { mutableStateOf(LocalSettings.serverUrl) }
+    var saved by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("服务器设置", fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = url,
+                    onValueChange = { url = it },
+                    singleLine = true,
+                    label = { Text("服务器地址(含 http:// 和端口)") },
+                    placeholder = { Text(LocalSettings.DEFAULT_SERVER_URL) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "模拟器保持默认即可;\n真机填电脑局域网 IP,如 http://192.168.1.8:8000/",
+                    fontSize = 11.sp,
+                    color = Cocoa,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                if (saved) {
+                    Text(
+                        "✓ 已保存",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF66BB6A),
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                LocalSettings.saveServerUrl(url)
+                saved = true
+            }) { Text("保存") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+    )
+}
+
+/** 品牌 Hero 里三幅像素画的浮动行(心 / 笑脸 / 蝴蝶):玻璃相框 + 上下轻微浮动。 */
 @Composable
 private fun FloatingPixelRow() {
     val transition = rememberInfiniteTransition(label = "float")
     val float by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
-        // 往返动画：上下轻轻浮动，避免 Restart 模式每 2 秒"跳回"一次
         animationSpec = infiniteRepeatable(tween(durationMillis = 2000), RepeatMode.Reverse),
         label = "floatPhase",
     )
@@ -185,7 +297,8 @@ private fun FloatingPixelRow() {
                     .offset(y = y)
                     .size(58.dp)
                     .clip(RoundedCornerShape(16.dp))
-                    .background(Color.White),
+                    .background(Color(0x2EFFFFFF))
+                    .border(1.dp, Color(0x59FFFFFF), RoundedCornerShape(16.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 PicturePreview(
@@ -193,144 +306,8 @@ private fun FloatingPixelRow() {
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(7.dp),
-                    filledColor = Color(0xFF5E5CE6),
+                    filledColor = Color(0xFFF4F2FF),
                 )
-            }
-        }
-    }
-}
-
-/** 玩家 / 管理员通用身份卡：图标徽章 + 标题说明 + 右侧进入胶囊。 */
-@Composable
-private fun RoleCard(
-    emoji: String,
-    title: String,
-    desc: String,
-    accent: Color,
-    onClick: () -> Unit,
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .clickable(onClick = onClick),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp, pressedElevation = 1.dp),
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(18.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Surface(
-                modifier = Modifier.size(54.dp),
-                shape = RoundedCornerShape(16.dp),
-                color = accent.copy(alpha = 0.14f),
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(emoji, fontSize = 28.sp)
-                }
-            }
-            Spacer(modifier = Modifier.width(14.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    title,
-                    fontSize = 19.sp,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = Ink,
-                )
-                Text(
-                    desc,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Cocoa,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            Surface(
-                shape = RoundedCornerShape(50),
-                color = accent,
-                contentColor = Color.White,
-            ) {
-                Text(
-                    "进入 ▶",
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
-                )
-            }
-        }
-    }
-}
-
-/** 管理员身份卡：金色徽章 + 密码输入 + 登录按钮。 */
-@Composable
-private fun AdminCard(
-    password: String,
-    error: Boolean,
-    onPasswordChange: (String) -> Unit,
-    onLogin: () -> Unit,
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
-        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp),
-    ) {
-        Column(modifier = Modifier.padding(18.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Surface(
-                    modifier = Modifier.size(54.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    color = Amber.copy(alpha = 0.16f),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Text("👑", fontSize = 28.sp)
-                    }
-                }
-                Spacer(modifier = Modifier.width(14.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        "管理员",
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Ink,
-                    )
-                    Text(
-                        "全局解锁全部关卡（含隐藏关 64×64）",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Cocoa,
-                        modifier = Modifier.padding(top = 4.dp),
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(14.dp))
-            OutlinedTextField(
-                value = password,
-                onValueChange = onPasswordChange,
-                label = { Text("管理员密码") },
-                visualTransformation = PasswordVisualTransformation(),
-                singleLine = true,
-                isError = error,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (error) {
-                Text(
-                    "密码错误，请重试",
-                    color = Color(0xFFD32F2F),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 6.dp),
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Button(
-                onClick = onLogin,
-                colors = ButtonDefaults.buttonColors(containerColor = Amber),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text("以管理员身份进入", fontWeight = FontWeight.Bold)
             }
         }
     }
