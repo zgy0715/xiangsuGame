@@ -27,45 +27,72 @@ package com.example.xiangsugame.model
  * 只在推不动时才用枚举，从而大幅减少递归分支数。
  */
 class PuzzleSolver(
-    /** 提示数字矩阵，与 Level.clueGrid 一致；-1 表示该格无提示。 */
+    /** 提示数字矩阵,与 Level.clueGrid 一致;-1 表示该格无提示。 */
     private val clues: Array<IntArray>,
     /** 最多求多少个解。校验唯一解时传 2 —— 找到第二个即可提前停止。 */
     private val maxSolutions: Int = 2,
     /**
-     * 求解时间上限（毫秒）；传 0 表示不限时。限时场景（如一次性稀疏提示生成、
-     * 超大棋盘交互校验）中，超时后 dfs 提前中止，结果可能不完整，
+     * 求解时间上限(毫秒);传 0 表示不限时。限时场景(如一次性稀疏提示生成、
+     * 超大棋盘交互校验)中,超时后 dfs 提前中止,结果可能不完整,
      * 调用方应通过 [timedOut] 判断 —— 超时的结果不能作为"无解 / 唯一解"的判定依据。
      */
     private val timeLimitMillis: Long = 0,
+    /**
+     * 初始约束(可选):把玩家当前盘面作为硬约束带入求解 ——
+     * 1 = 必须涂黑(玩家已涂)、0 = 必须留白(玩家标 ✕)、-1 = 未定。
+     * 用于"提示下一步":在保留当前进度的前提下推导仍可确定的格子。
+     */
+    private val initial: Array<IntArray>? = null,
 ) {
     private val rows = clues.size
     private val cols = clues[0].size
-    /** 当前搜索路径上的棋盘状态，初始全为未知 (-1)。 */
+    /** 当前搜索路径上的棋盘状态,初始全为未知 (-1)。 */
     private val board = Array(rows) { IntArray(cols) { -1 } }
 
-    /** 搜索截止时刻（纳秒）；不限时为 Long.MAX_VALUE（永不触发）。 */
+    /** 求解器第 0 层(根节点)约束传播即可确定的格子 —— "纯逻辑可推出"的候选提示。 */
+    var rootForcedCells: List<Pair<Int, Int>> = emptyList()
+        private set
+
+    init {
+        initial?.let { initBoard ->
+            require(initBoard.size == rows) { "初始约束行数与线索不一致" }
+            for (r in 0 until rows) {
+                require(initBoard[r].size == cols) { "初始约束列数与线索不一致" }
+                for (c in 0 until cols) {
+                    board[r][c] = initBoard[r][c].coerceIn(-1, 1)
+                }
+            }
+        }
+    }
+
+    /** 搜索截止时刻(纳秒);不限时为 Long.MAX_VALUE(永不触发)。 */
     private val deadlineNanos: Long =
         if (timeLimitMillis > 0) System.nanoTime() + timeLimitMillis * 1_000_000L else Long.MAX_VALUE
 
-    /** 是否因超过时间上限而提前中止（此时 [solveAll] 结果不完整）。 */
+    /** 是否因超过时间上限而提前中止(此时 [solveAll] 结果不完整)。 */
     var timedOut: Boolean = false
         private set
 
     /** 求出至多 maxSolutions 个满足全部线索的完整解。 */
     fun solveAll(): List<Array<IntArray>> {
         val solutions = mutableListOf<Array<IntArray>>()
+        rootForcedCells = emptyList()
+        rootPassed = false
         dfs(solutions)
         return solutions
     }
 
+    /** 是否为根节点(dfs 树的第 0 层调用);用于只在根上抓取"纯推导确定格"。 */
+    private var rootPassed = false
+
     /**
-     * 深度优先搜索（DFS）主循环。
+     * 深度优先搜索(DFS)主循环。
      *
-     * 一个递归调用代表搜索树中的一个节点：
-     * 在当前 board 状态下，先做一轮约束传播，若没有未知格了就是一个叶节点
-     * （检查是否满足全部线索，满足则记为一个解），否则选择一个未知格分支。
+     * 一个递归调用代表搜索树中的一个节点:
+     * 在当前 board 状态下,先做一轮约束传播,若没有未知格了就是一个叶节点
+     * (检查是否满足全部线索,满足则记为一个解),否则选择一个未知格分支。
      *
-     * @param solutions 累积已找到解的容器（跨递归共享）
+     * @param solutions 累积已找到解的容器(跨递归共享)
      */
     private fun dfs(solutions: MutableList<Array<IntArray>>) {
         // 剪枝：解已经够了就不再深入（这是"至多 maxSolutions"的关键）
@@ -75,6 +102,9 @@ class PuzzleSolver(
             timedOut = true
             return
         }
+
+        val isRoot = !rootPassed
+        rootPassed = true
 
         // propagated 记录本层约束传播新确定的格子，回溯时要还原成 -1
         val propagated = mutableListOf<Pair<Int, Int>>()
@@ -144,6 +174,11 @@ class PuzzleSolver(
             }
         }
 
+        // 根节点:记录"纯推导即可确定"的格子(供"提示下一步"优先展示)
+        if (isRoot) {
+            rootForcedCells = propagated.toList()
+        }
+
         // ————————————————————————————————————————————
         // ② 找一个未知格进行分支（启发式：找第一个未知格）
         // ————————————————————————————————————————————
@@ -205,4 +240,56 @@ class PuzzleSolver(
         }
         return true
     }
+}
+
+/** 一个提示步骤:定位到某格并给出应达成的状态(target: 1 涂黑 / 0 留白)。 */
+data class HintStep(val row: Int, val col: Int, val target: Int, val message: String) {
+    /** 无具体格子可提示(如盘面矛盾 / 已全部填满),仅用于展示 message。 */
+    val hasCell: Boolean get() = row >= 0 && col >= 0
+}
+
+/**
+ * 单人「提示下一步」:以当前盘面为硬约束求解(本题唯一解),找出当前仍
+ * 未决定、但由线索逻辑可推导出结果的格子——优先"纯约束传播"即可确定的格子,
+ * 否则取唯一解下按行优先的第一个未决定格。盘面与线索矛盾时提示先检查错误。
+ *
+ * @param board 当前棋盘(CellState.value:0 未定 / 1 涂黑 / 2 标记留白)
+ */
+fun nextHint(clues: Array<IntArray>, board: Array<IntArray>): HintStep {
+    val init = Array(board.size) { r ->
+        IntArray(board[r].size) { c ->
+            when (board[r][c]) {
+                CellState.FILLED.value -> 1
+                CellState.MARKED_EMPTY.value -> 0
+                else -> -1
+            }
+        }
+    }
+    val solver = PuzzleSolver(clues, maxSolutions = 2, initial = init)
+    val solutions = solver.solveAll()
+    if (solutions.isEmpty()) {
+        return HintStep(-1, -1, -1, "当前盘面存在矛盾,建议先「检查错误」再继续")
+    }
+    val solution = solutions[0]
+    // 优先提示根节点约束传播即能确定的格子(纯逻辑一步可推)
+    for ((r, c) in solver.rootForcedCells) {
+        if (board[r][c] != CellState.UNDECIDED.value) continue
+        return if (solution[r][c] == 1) {
+            HintStep(r, c, 1, "第 ${r + 1} 行 ${c + 1} 列应涂黑")
+        } else {
+            HintStep(r, c, 0, "第 ${r + 1} 行 ${c + 1} 列应留白(标 ✕)")
+        }
+    }
+    // 需要推演:取唯一解下第一个未决定格(其状态由唯一解锁定,同样"可推导")
+    for (r in board.indices) {
+        for (c in board[r].indices) {
+            if (board[r][c] != CellState.UNDECIDED.value) continue
+            return if (solution[r][c] == 1) {
+                HintStep(r, c, 1, "第 ${r + 1} 行 ${c + 1} 列应涂黑")
+            } else {
+                HintStep(r, c, 0, "第 ${r + 1} 行 ${c + 1} 列应留白(标 ✕)")
+            }
+        }
+    }
+    return HintStep(-1, -1, -1, "已全部填满,无需再提示")
 }

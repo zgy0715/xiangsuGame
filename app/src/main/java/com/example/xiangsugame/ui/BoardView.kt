@@ -76,6 +76,8 @@ private val WrongBg = Color(0xFFFFD6D6)          // 检查出的错误格：浅�
 private val WrongBorder = Color(0xFFD32F2F)      // 错误格红框
 private val WrongMark = Color(0xFFE53935)        // 错误格红叉
 private val SatisfiedClue = Color(0xFF2FA57F)    // 已满足提示的数字色：纸上柔绿
+private val HintGlow = Color(0x46FFC94D)         // 「提示下一步」格：琥珀光晕
+private val HintBorder = Color(0xFFFFB300)       // 「提示下一步」格：琥珀描边
 private val TextOnDark = Color.White             // 数字在涂黑格上的颜色
 private val FrameColor = Color(0xFF8F89BC)       // 棋盘外框（装裱）色：夜幕上可见的裱框
 private val PictureFilled = Color(0xFF241F3D)    // 图片模式下的"墨色"像素（更纯的墨蓝）
@@ -122,6 +124,8 @@ fun BoardView(
     satisfiedClues: Set<Pair<Int, Int>> = emptySet(),
     /** 显式"检查"返回的错误格集合：命中时该格画浅红底 + 红 ✗（平时传空集）。 */
     revealedWrong: Set<Pair<Int, Int>> = emptySet(),
+    /** 「提示下一步」高亮格：命中格叠琥珀光晕 + 琥珀描边，引导玩家落笔。 */
+    hintCell: Pair<Int, Int>? = null,
     /** 当前填色工具（只在 interactive=true 时生效）。 */
     tool: PaintTool = PaintTool.FILL,
     /** 开始一笔：手指落下、涂第一格之前调用（上层 startStroke）。 */
@@ -343,6 +347,7 @@ fun BoardView(
                             val state = CellState.fromValue(board[r][c])
                             // 只在"检查"后生效的错误标红（平时 revealedWrong 为空集）
                             val isWrong = showClues && (r to c) in revealedWrong
+                            val isHint = showClues && hintCell?.first == r && hintCell?.second == c
                             val isSatisfiedClue = showClues && (r to c) in satisfiedClues
 
                             // —— 1. 背景 —
@@ -355,6 +360,11 @@ fun BoardView(
                                 else -> CellBlank
                             }
                             drawRect(color = bg, topLeft = Offset(left, top), size = Size(cellW, cellH))
+
+                            // 提示格:叠一层琥珀光晕,让"该在这里落笔"一眼可见
+                            if (isHint) {
+                                drawRect(color = HintGlow, topLeft = Offset(left, top), size = Size(cellW, cellH))
+                            }
 
                             // —— 2. 提示数字 + 状态点缀（错误格已被红 ✗ 盖住，不再重复画）——
                             if (!isWrong) {
@@ -414,11 +424,20 @@ fun BoardView(
 
                             // —— 4. 格子边框（除以 viewScale：放大后仍是屏幕上约 1px 的细线）——
                             if (showClues) {
+                                val borderColor = when {
+                                    isWrong -> WrongBorder
+                                    isHint -> HintBorder
+                                    else -> GridLine
+                                }
+                                val borderWidth = when {
+                                    isWrong || isHint -> 2.5f
+                                    else -> 1f
+                                }
                                 drawRect(
-                                    color = if (isWrong) WrongBorder else GridLine,
+                                    color = borderColor,
                                     topLeft = Offset(left, top),
                                     size = Size(cellW, cellH),
-                                    style = Stroke(width = (if (isWrong) 2.5f else 1f) / viewScale),
+                                    style = Stroke(width = borderWidth / viewScale),
                                 )
                             }
                         }

@@ -223,6 +223,61 @@ class CoreLogicTest {
         assertFalse(gameBoard.canUndo)
     }
 
+    // ———— 8. 单人「提示下一步」 ————
+
+    @Test
+    fun `hint on empty board matches the unique solution`() {
+        for (level in Levels.all.take(3)) {
+            val board = GameBoard(level.rows, level.cols).board
+            val hint = nextHint(level.clueGrid, board)
+            assertTrue("空盘也应有可提示的确定格", hint.hasCell)
+            assertEquals(
+                "提示方向应与答案一致:关卡「${level.name}」(${hint.row},${hint.col})",
+                level.answerGrid[hint.row][hint.col],
+                hint.target,
+            )
+        }
+    }
+
+    @Test
+    fun `following hints step by step reaches the unique solution`() {
+        val level = Levels.all.first()
+        val board = GameBoard(level.rows, level.cols).board
+        var steps = 0
+        while (true) {
+            val hint = nextHint(level.clueGrid, board)
+            if (!hint.hasCell) break
+            board[hint.row][hint.col] =
+                if (hint.target == 1) CellState.FILLED.value else CellState.MARKED_EMPTY.value
+            steps++
+            // 每格至多被提示一次,合法步数不可能超过格子数;超限即说明提示在空转
+            assertTrue("提示应当逐格推进且不重复", steps <= level.rows * level.cols)
+        }
+        assertTrue("按提示逐格推导应还原唯一解", Validator(level).isSolved(board))
+    }
+
+    @Test
+    fun `contradictory board yields guidance message without a cell`() {
+        // 角格线索为 0,却涂黑其中一格 → 盘面与线索矛盾,无确定格可提示
+        val level = centerLevel()
+        val board = GameBoard(level.rows, level.cols).board
+        board[0][0] = CellState.FILLED.value
+        val hint = nextHint(level.clueGrid, board)
+        assertFalse("矛盾盘面不应指向具体格子", hint.hasCell)
+        assertTrue("应引导先检查错误", hint.message.contains("矛盾"))
+    }
+
+    @Test
+    fun `partial progress keeps hint consistent`() {
+        // 已正确涂好中心后,剩余未定格的提示仍与唯一解一致
+        val level = centerLevel()
+        val board = GameBoard(level.rows, level.cols).board
+        board[2][2] = CellState.FILLED.value
+        val hint = nextHint(level.clueGrid, board)
+        assertTrue(hint.hasCell)
+        assertEquals(level.answerGrid[hint.row][hint.col], hint.target)
+    }
+
     // ———— 工具 ————
 
     /** 5×5 中心单格涂黑：角格 (0,0) 线索为 0，中心 (2,2) 线索为 1，便于确定性断言。 */

@@ -64,8 +64,10 @@ import com.example.xiangsugame.model.CellState
 import com.example.xiangsugame.model.Difficulty
 import com.example.xiangsugame.model.GameBoard
 import com.example.xiangsugame.model.GameMode
+import com.example.xiangsugame.model.HintStep
 import com.example.xiangsugame.model.Level
 import com.example.xiangsugame.model.Validator
+import com.example.xiangsugame.model.nextHint
 import com.example.xiangsugame.ui.theme.Amber
 import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Cyan
@@ -129,6 +131,9 @@ fun GameScreen(
     var strokeTarget by remember(level.id) { mutableStateOf<CellState?>(null) }
     // 显式"检查"结果：非 null 表示检查中（该集合是当时快照，编辑后自动清除）
     var checkedWrong by remember(level.id) { mutableStateOf<Set<Pair<Int, Int>>?>(null) }
+    // 「提示下一步」：命中格高亮 + 顶部提示条；无可提示时走 hintNotice 弹窗
+    var hintStep by remember(level.id) { mutableStateOf<HintStep?>(null) }
+    var hintNotice by remember(level.id) { mutableStateOf<String?>(null) }
     // 本关已用秒数（计时器累计）
     var elapsedSeconds by remember(level.id) { mutableIntStateOf(0) }
     // 参考答案弹窗开关；peekedAnswer 记录本关是否查看过答案（结算时仅提示、不惩罚）
@@ -195,6 +200,7 @@ fun GameScreen(
     val onStrokeBegin: () -> Unit = {
         // 玩家一动手，旧"检查"结果即失效（避免过期标红误导）
         checkedWrong = null
+        hintStep = null // 提示格已按新盘面重算
         strokeTarget = null // 新一笔重新判定涂/擦方向
         gameBoard.startStroke()
     }
@@ -224,14 +230,17 @@ fun GameScreen(
     }
     val onUndo: () -> Unit = {
         checkedWrong = null
+        hintStep = null
         if (gameBoard.undo()) boardVersion++
     }
     val onRedo: () -> Unit = {
         checkedWrong = null
+        hintStep = null
         if (gameBoard.redo()) boardVersion++
     }
     val onReset: () -> Unit = {
         checkedWrong = null
+        hintStep = null
         gameBoard.reset()
         elapsedSeconds = 0 // 重置也归零计时，视为重新开始
         boardVersion++
@@ -240,10 +249,20 @@ fun GameScreen(
         if (account.useFill()) {
             gameBoard.applySolution(level.answerGrid)
             checkedWrong = null
+            hintStep = null
             boardVersion++
         }
     }
     val onCheck: () -> Unit = { checkedWrong = validator.wrongCells(board) }
+    /** 「提示下一步」：以当前盘面为约束推导确定格（矛盾/完成时给文字说明）。 */
+    val onHint: () -> Unit = {
+        checkedWrong = null
+        val step = nextHint(level.clueGrid, board)
+        if (step.hasCell) hintStep = step else {
+            hintStep = null
+            hintNotice = step.message
+        }
+    }
     val onShowAnswer: () -> Unit = {
         peekedAnswer = true
         showAnswer = true
@@ -293,6 +312,7 @@ fun GameScreen(
                         total = totalFilled,
                         fraction = progressFraction,
                     )
+                    HintBar(hintStep = hintStep)
                     // 棋盘在剩余空间内居中，尺寸封顶 BoardMaxSizeWide，不再无限拉伸
                     Box(
                         modifier = Modifier
@@ -307,6 +327,7 @@ fun GameScreen(
                             board = if (isSolved) level.answerGrid else board,
                             satisfiedClues = satisfiedClues,
                             revealedWrong = checkedWrong.orEmpty(),
+                            hintCell = hintStep?.let { it.row to it.col },
                             tool = tool,
                             onStrokeBegin = onStrokeBegin,
                             onStrokeCell = onStrokeCell,
@@ -357,6 +378,7 @@ fun GameScreen(
                         fillQuota = account.fillQuotaRemaining,
                         checkedWrong = checkedWrong,
                         onCheck = onCheck,
+                        onHint = onHint,
                         onShowAnswer = onShowAnswer,
                         onFill = onFill,
                         onClearWrong = onClearWrong,
@@ -385,11 +407,13 @@ fun GameScreen(
                     total = totalFilled,
                     fraction = progressFraction,
                 )
+                HintBar(hintStep = hintStep)
                 BoardView(
                     level = level,
                     board = if (isSolved) level.answerGrid else board,
                     satisfiedClues = satisfiedClues,
                     revealedWrong = checkedWrong.orEmpty(),
+                    hintCell = hintStep?.let { it.row to it.col },
                     tool = tool,
                     onStrokeBegin = onStrokeBegin,
                     onStrokeCell = onStrokeCell,
@@ -426,6 +450,7 @@ fun GameScreen(
                     fillQuota = account.fillQuotaRemaining,
                     checkedWrong = checkedWrong,
                     onCheck = onCheck,
+                    onHint = onHint,
                     onShowAnswer = onShowAnswer,
                     onFill = onFill,
                     onClearWrong = onClearWrong,
@@ -498,6 +523,18 @@ fun GameScreen(
             },
         )
     }
+
+    // —— 「提示下一步」无可提示格(盘面矛盾/已填满)时的说明 ——
+    hintNotice?.let {
+        AlertDialog(
+            onDismissRequest = { hintNotice = null },
+            title = { Text("💡 提示", fontWeight = FontWeight.Bold) },
+            text = { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant) },
+            confirmButton = {
+                TextButton(onClick = { hintNotice = null }) { Text("知道了") }
+            },
+        )
+    }
 }
 
 // ============================================================
@@ -564,6 +601,29 @@ private fun HudRow(
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
             )
         }
+    }
+}
+
+/** 「提示下一步」提示条：高亮格配一句落笔建议（有提示格时展示）。 */
+@Composable
+private fun HintBar(hintStep: HintStep?) {
+    val hint = hintStep ?: return
+    if (!hint.hasCell) return
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 4.dp),
+        shape = RoundedCornerShape(10.dp),
+        color = Amber.copy(alpha = 0.13f),
+        border = BorderStroke(1.dp, Amber.copy(alpha = 0.45f)),
+    ) {
+        Text(
+            "💡 ${hint.message}",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = Amber,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+        )
     }
 }
 
@@ -709,6 +769,7 @@ private fun AssistGroup(
     fillQuota: Int,
     checkedWrong: Set<Pair<Int, Int>>?,
     onCheck: () -> Unit,
+    onHint: () -> Unit,
     onShowAnswer: () -> Unit,
     onFill: () -> Unit,
     onClearWrong: () -> Unit,
@@ -742,6 +803,11 @@ private fun AssistGroup(
                     fontWeight = FontWeight.Bold,
                 )
             }
+            OutlinedButton(
+                onClick = onHint,
+                enabled = checkEnabled,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("💡 提示下一步") }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = onCheck,
@@ -755,35 +821,42 @@ private fun AssistGroup(
             }
         }
     } else {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            OutlinedButton(
-                onClick = onCheck,
-                enabled = checkEnabled,
-                modifier = Modifier.weight(1f),
-            ) { Text("🔍 检查", maxLines = 1) }
+        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    onClick = onHint,
+                    enabled = checkEnabled,
+                    modifier = Modifier.weight(1f),
+                ) { Text("💡 提示", maxLines = 1) }
+                OutlinedButton(
+                    onClick = onCheck,
+                    enabled = checkEnabled,
+                    modifier = Modifier.weight(1f),
+                ) { Text("🔍 检查", maxLines = 1) }
+                Button(
+                    onClick = onFill,
+                    enabled = fillEnabled,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Coral,
+                        disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    ),
+                    modifier = Modifier.weight(1.2f),
+                ) {
+                    Text(
+                        if (fillQuota > 0) "⚡ 补齐 $fillQuota" else "⚡ 补齐",
+                        maxLines = 1,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
             OutlinedButton(
                 onClick = onShowAnswer,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.fillMaxWidth(),
             ) { Text("参考答案", maxLines = 1) }
-            Button(
-                onClick = onFill,
-                enabled = fillEnabled,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Coral,
-                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                ),
-                modifier = Modifier.weight(1.2f),
-            ) {
-                Text(
-                    if (fillQuota > 0) "⚡ 补齐 $fillQuota" else "⚡ 补齐",
-                    maxLines = 1,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
         }
     }
 }
