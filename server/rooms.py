@@ -5,11 +5,16 @@
 流程:
   房主 POST /api/rooms → 4 位房号;全员直接 WS /ws/rooms/{code}?token=…
   房主 choosePuzzle(完整 Level JSON,含答案) → 服务器缓存为校验基准,只广播题名;
-  房主 start → 服务器记 serverStartMs → 广播 raceStart(完整题目);
+  房主 start → 服务器记 serverStartMs → 广播 raceStart(完整题目);开局即发送
+  timeSync 回包(服务器时钟,供客户端 NTP 校时显示);
   竞速中 progress(节流)转发展示;finish(grid) → 服务器比对涂黑掩码,
-  正确者按接收序排名(时长=服务器计时,不可自报),写 solve_records(source='race');
-  全部完成后广播 result(服务器权威)并进入 settled。
-  心跳:客户端 25s ping;服务器 90s 无消息判掉线;竞速中主机掉线 → 房间解散。
+  正确者按接收序排名(**时长 = 服务器计时,不可自报**),写 solve_records(source='race');
+  全部完成后广播 result(服务器权威)并进入 settled;
+  settled 后房主可发 rematch 重置为 lobby 再来一局(重赛)。
+  心跳:客户端 25s ping;服务器 90s 无消息判掉线。
+  断线重进:掉线只标记 connected=False,席位与已涂进度保留(竞速中未完成的
+  重进会重置其进度并重发 raceStart);房主掉线后保留 ROOM_HOST_GRACE_SECONDS
+  宽限,期间重连即恢复,超时房间解散。
 """
 import asyncio
 import json
@@ -27,6 +32,9 @@ router = APIRouter(tags=["rooms"])
 ROOM_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"  # 去掉 0O1I 防误读
 MAX_PLAYERS = 4
 HEARTBEAT_IDLE_SECONDS = 90
+# 房主掉线后房间保留的宽限秒数:宽限内房主重连即恢复对局(断线重进);超时解散。
+# 模块级常量便于冒烟测试临时调短。
+ROOM_HOST_GRACE_SECONDS = 60
 
 _lock = threading.Lock()
 _rooms = {}  # code -> room dict
@@ -109,6 +117,18 @@ def _settle_if_done(room):
         _broadcast(room, {"type": "result", "payload": {"entries": entries}})
 
 
+def _purge_room_if_host_away(code):
+    """房主掉线宽限期到期回调:房主仍未重连则解散房间,通知在场玩家。"""
+    with _lock:
+        room = _rooms.get(code)
+        if not room or room["phase"] == "settled":
+            return
+        host = room["players"].get(room["host_id"])
+        if host is None or not host.get("connected"):
+            _rooms.pop(code, None)
+            _broadcast(room, {"type": "error", "payload": {"message": "房主已离线,房间解散"}})
+
+
 @router.websocket("/ws/rooms/{code}")
 async def room_socket(ws: WebSocket, code: str, token: str = ""):
     user = db.user_by_token(token)
@@ -120,23 +140,43 @@ async def room_socket(ws: WebSocket, code: str, token: str = ""):
         if room is None:
             await ws.close(code=4404, reason="房间不存在")
             return
-        if room["phase"] == "settled":
-            await ws.close(code=4409, reason="本局已结束")
-            return
-        if len(room["players"]) >= MAX_PLAYERS:
-            await ws.close(code=4413, reason="房间已满")
-            return
-        player = {
-            "user_id": user["user_id"], "nickname": user["nickname"],
-            "ws": ws, "connected": True, "ready": False,
-            "filled": 0, "last_progress": 0.0, "finished_rank": 0,
-        }
-        room["players"][user["user_id"]] = player
+        member = room["players"].get(user["user_id"])
+        if member is None:
+            # 新成员:已结束的房间拒绝加入;席位按“在线人数”限量(离线席位留给原主重进)
+            if room["phase"] == "settled":
+                await ws.close(code=4409, reason="本局已结束")
+                return
+            connected = [p for p in room["players"].values() if p["connected"]]
+            if len(connected) >= MAX_PLAYERS:
+                await ws.close(code=4413, reason="房间已满")
+                return
+            player = {
+                "user_id": user["user_id"], "nickname": user["nickname"],
+                "ws": ws, "connected": True, "ready": False,
+                "filled": 0, "last_progress": 0.0, "finished_rank": 0,
+            }
+            room["players"][user["user_id"]] = player
+        else:
+            # 断线重进:恢复原席位,保留 ready/filled/finished_rank
+            player = member
+            player["ws"] = ws
+            player["connected"] = True
         player_id = user["user_id"]
         is_host = (room["host_id"] == player_id)
+        room.pop("host_away_since", None)
+        # 竞速中重进:一律补发题目(新会话需要完整 Level);未完成者本地棋盘已丢,
+        # 进度归零重赛,完成者保留进度只看结算
+        rejoin_racing = room["phase"] == "racing" and member is not None
+        if rejoin_racing and not player.get("finished_rank"):
+            player["filled"] = 0
 
     await ws.accept()
     await ws.send_text(json.dumps({"type": "roomState", "payload": _room_state(room)}, ensure_ascii=False))
+    if rejoin_racing:
+        # 只向重进者重发题目与服务器起跑时刻;随后全员 roomState 对齐进度
+        await ws.send_text(json.dumps({"type": "raceStart", "payload": {
+            "serverStartMs": room["start_ms"] or 0, "level": room["puzzle"] or {}}}, ensure_ascii=False))
+    _broadcast(room, {"type": "roomState", "payload": _room_state(room)})
 
     try:
         while True:
@@ -151,6 +191,14 @@ async def room_socket(ws: WebSocket, code: str, token: str = ""):
             mtype = msg.get("type")
             payload = msg.get("payload") or {}
             self_error = None
+
+            # timeSync:与房间状态无关,直接回服务器时钟(客户端 NTP 校时,竞速计时基准)
+            if mtype == "timeSync":
+                await ws.send_text(json.dumps(
+                    {"type": "timeSync", "payload": {"serverTimeMs": _now_ms()}},
+                    ensure_ascii=False))
+                continue
+
             with _lock:
                 room = _rooms.get(code.upper())
                 if not room or player_id not in room["players"]:
@@ -174,6 +222,18 @@ async def room_socket(ws: WebSocket, code: str, token: str = ""):
                         room["start_ms"] = _now_ms()
                         _broadcast(room, {"type": "raceStart", "payload": {
                             "serverStartMs": room["start_ms"], "level": room["puzzle"]}})
+                elif mtype == "rematch" and is_host and room["phase"] in ("settled", "racing"):
+                    # 重赛:回到 lobby,清空上局结算与进度,房主可重新选题发车
+                    room["phase"] = "lobby"
+                    room["puzzle"] = None
+                    room["start_ms"] = None
+                    room["finishes"] = []
+                    for p in room["players"].values():
+                        p["filled"] = 0
+                        p["finished_rank"] = 0
+                        p["ready"] = False
+                        p["last_progress"] = 0.0
+                    _broadcast(room, {"type": "roomState", "payload": _room_state(room)})
                 elif mtype == "progress":
                     now = time.time()
                     if now - player["last_progress"] < 0.5:
@@ -229,13 +289,16 @@ async def room_socket(ws: WebSocket, code: str, token: str = ""):
                 return
             room["players"][player_id]["connected"] = False
             room["players"][player_id]["ws"] = None
-            if player_id == room["host_id"]:
+            # 全员离线 → 房间直接回收
+            if all(not p["connected"] for p in room["players"].values()):
                 _rooms.pop(room["code"], None)
-                _broadcast(room, {"type": "error", "payload": {"message": "房主已离开,房间解散"}})
                 return
             _broadcast(room, {"type": "playerLeft", "payload": {"userId": player_id}})
             _broadcast(room, {"type": "roomState", "payload": _room_state(room)})
+            # 房主掉线:不立即解散,保留宽限期等待重连;超时由 _purge_room_if_host_away 回收
+            if player_id == room["host_id"] and not room.get("host_away_since"):
+                room["host_away_since"] = _now_ms()
+                loop = asyncio.get_running_loop()
+                loop.call_later(ROOM_HOST_GRACE_SECONDS, _purge_room_if_host_away, room["code"])
             if room["phase"] == "racing":
                 _settle_if_done(room)
-            if all(not p["connected"] for p in room["players"].values()):
-                _rooms.pop(room["code"], None)

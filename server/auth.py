@@ -96,6 +96,26 @@ def me(user=Depends(current_user)):
     return {"userId": user["user_id"], "nickname": user["nickname"]}
 
 
+class NicknameRequest(BaseModel):
+    nickname: str = ""
+
+
+def normalize_nickname(raw: str) -> str:
+    """昵称校验:去首尾空白,非空且不超过 20 个字符。返回规范化结果,非法抛 400。"""
+    name = (raw or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail={"error": "昵称不能为空"})
+    return name[:20]
+
+
+@router.post("/nickname")
+def change_nickname(req: NicknameRequest, user=Depends(current_user)):
+    """修改昵称:仅真实登录用户可改(游客为离线身份,不经本端点)。"""
+    name = normalize_nickname(req.nickname)
+    db.set_nickname(user["user_id"], name)
+    return {"nickname": name}
+
+
 @router.post("/logout")
 def logout(user=Depends(current_user)):
     db.delete_token(user["token"])
