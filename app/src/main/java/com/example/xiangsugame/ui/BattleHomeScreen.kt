@@ -37,7 +37,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -71,6 +73,7 @@ import com.example.xiangsugame.ui.theme.Cocoa
 import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Cyan
 import com.example.xiangsugame.ui.theme.Ink
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private enum class BattleView { MENU, NETWORK_SETUP, ROOM, BLUETOOTH }
@@ -95,6 +98,18 @@ fun BattleHomeScreen(
         session = null
         view = BattleView.MENU
     }
+
+    /** 断线重进:同一房号按原身份重建会话(服务器保留席位/进度,竞速中会补发题目)。 */
+    fun reconnect() {
+        val s = session ?: return
+        if (!s.canReconnect) return
+        val code = s.roomTag
+        val role = s.role
+        session?.close()
+        val ns = BattleSession(NetworkBattleTransport(code), role, roomTag = code, canReconnect = true)
+        session = ns
+        ns.open()
+    }
     DisposableEffect(Unit) { onDispose { session?.close() } }
 
     Column(
@@ -113,13 +128,13 @@ fun BattleHomeScreen(
             BattleView.NETWORK_SETUP -> NetworkSetup(
                 accountReady = session == null,
                 onCreated = { code ->
-                    val s = BattleSession(NetworkBattleTransport(code), BattleRole.HOST, roomTag = code)
+                    val s = BattleSession(NetworkBattleTransport(code), BattleRole.HOST, roomTag = code, canReconnect = true)
                     session = s
                     s.open()
                     view = BattleView.ROOM
                 },
                 onJoined = { code ->
-                    val s = BattleSession(NetworkBattleTransport(code), BattleRole.GUEST, roomTag = code)
+                    val s = BattleSession(NetworkBattleTransport(code), BattleRole.GUEST, roomTag = code, canReconnect = true)
                     session = s
                     s.open()
                     view = BattleView.ROOM
@@ -134,7 +149,7 @@ fun BattleHomeScreen(
                         CircularProgressIndicator()
                     }
                 } else {
-                    BattleRoomContent(session = s, account = account, onExit = { teardown() })
+                    BattleRoomContent(session = s, account = account, onExit = { teardown() }, onReconnect = { reconnect() })
                 }
             }
 
@@ -362,16 +377,24 @@ private fun BattleRoomContent(
     session: BattleSession,
     account: AccountStore?,
     onExit: () -> Unit,
+    onReconnect: () -> Unit,
 ) {
     var showPickDialog by remember { mutableStateOf(false) }
 
-    // 致命错误(房间解散/连接失败) → 弹窗回大厅
+    // 致命错误(房间解散/连接失败) → 弹窗;网络房可选「重新连接」(房主离线宽限期内/网络抖动)
     session.fatal?.let { fatalMsg ->
         AlertDialog(
             onDismissRequest = onExit,
             title = { Text("对局中断") },
             text = { Text(fatalMsg, color = Cocoa) },
-            confirmButton = { TextButton(onClick = onExit) { Text("返回大厅") } },
+            confirmButton = {
+                if (session.canReconnect) {
+                    TextButton(onClick = onReconnect) { Text("重新连接") }
+                    TextButton(onClick = onExit) { Text("返回大厅") }
+                } else {
+                    TextButton(onClick = onExit) { Text("返回大厅") }
+                }
+            },
         )
         return
     }
@@ -474,7 +497,29 @@ private fun BattleRoomContent(
         }
 
         BattlePhase.CLOSED -> {
-            Box(modifier = Modifier.fillMaxSize()) {}
+            // 传输层断开(无致命错误,如服务器主动关闭)→ 网络房展示「重新连接」面板
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("📡", fontSize = 40.sp)
+                Text("连接已断开", fontSize = 18.sp, fontWeight = FontWeight.Black, color = Ink)
+                Text(
+                    "房号 ${session.roomTag} · 席位为您保留,重连后可继续本局",
+                    fontSize = 12.sp, color = Cocoa,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                if (session.canReconnect) {
+                    Button(
+                        onClick = onReconnect,
+                        colors = ButtonDefaults.buttonColors(containerColor = Coral),
+                    ) { Text("🔄 重新连接", fontWeight = FontWeight.Bold) }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                TextButton(onClick = onExit) { Text("退出房间", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
         }
     }
 
@@ -640,6 +685,18 @@ private fun RaceView(
     }
     val myFinished = session.mySubmitted
 
+    // 服务器权威计时显示:按 NTP 校时后的"服务器时间"重算本局用时(由服务器时钟驱动)
+    var nowMs by remember { mutableLongStateOf(session.serverNowMs()) }
+    LaunchedEffect(session.phase, session.serverStartMs) {
+        while (session.phase == BattlePhase.RACING) {
+            delay(1000)
+            nowMs = session.serverNowMs()
+        }
+    }
+    val raceElapsedMs = if (session.serverStartMs > 0) {
+        (nowMs - session.serverStartMs).coerceAtLeast(0L)
+    } else 0L
+
     Box(modifier = Modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(
@@ -667,6 +724,7 @@ private fun RaceView(
                     when {
                         session.phase == BattlePhase.SETTLED -> "结算"
                         myFinished -> "已提交 ✓"
+                        session.serverStartMs > 0 -> formatDuration(raceElapsedMs.toInt())
                         else -> "竞速中…"
                     },
                     fontSize = 12.sp, fontWeight = FontWeight.Bold,
@@ -789,6 +847,23 @@ private fun RaceView(
                             }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
+                        if (session.isHost) {
+                            Button(
+                                onClick = { session.requestRematch() },
+                                colors = ButtonDefaults.buttonColors(containerColor = Coral),
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text("🔁 再来一局", fontWeight = FontWeight.Bold) }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        } else {
+                            Text(
+                                "等待房主发起「再来一局」…",
+                                fontSize = 12.sp, color = Cocoa, textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
                         GradientButton(text = "返回大厅", onClick = onExit, modifier = Modifier.fillMaxWidth())
                     }
                 }

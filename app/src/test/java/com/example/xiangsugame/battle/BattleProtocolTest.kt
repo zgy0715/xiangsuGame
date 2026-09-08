@@ -65,6 +65,20 @@ class BattleProtocolTest {
     }
 
     @Test
+    fun `rematch and timeSync frames round trip`() {
+        // 无负载帧:重赛
+        val (t1, p1) = BattleProtocol.decode(BattleProtocol.encode(BattleProtocol.UP_REMATCH))
+        assertEquals(BattleProtocol.UP_REMATCH, t1)
+        assertNull(p1)
+        // 带负载帧:NTP 校时回包
+        val raw = BattleProtocol.encode(BattleProtocol.DOWN_TIME_SYNC, BattleProtocol.TimeSyncPayload(serverTimeMs = 9_999))
+        val (t2, p2) = BattleProtocol.decode(raw)
+        assertEquals(BattleProtocol.DOWN_TIME_SYNC, t2)
+        val back = BattleProtocol.parse<BattleProtocol.TimeSyncPayload>(p2)
+        assertEquals(9_999L, back?.serverTimeMs)
+    }
+
+    @Test
     fun `garbage and unknown-type frames are tolerated`() {
         val (type, _) = BattleProtocol.decode("not json at all")
         assertEquals("", type)

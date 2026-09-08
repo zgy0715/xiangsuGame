@@ -1,6 +1,7 @@
 package com.example.xiangsugame.battle
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.example.xiangsugame.api.dto.toDto
@@ -13,9 +14,12 @@ import com.example.xiangsugame.battle.BattleProtocol.DOWN_PROGRESS
 import com.example.xiangsugame.battle.BattleProtocol.DOWN_RACE_START
 import com.example.xiangsugame.battle.BattleProtocol.DOWN_RESULT
 import com.example.xiangsugame.battle.BattleProtocol.DOWN_ROOM_STATE
+import com.example.xiangsugame.battle.BattleProtocol.DOWN_TIME_SYNC
 import com.example.xiangsugame.battle.BattleProtocol.UP_FINISH
 import com.example.xiangsugame.battle.BattleProtocol.UP_PROGRESS
+import com.example.xiangsugame.battle.BattleProtocol.UP_REMATCH
 import com.example.xiangsugame.battle.BattleProtocol.UP_START
+import com.example.xiangsugame.battle.BattleProtocol.UP_TIME_SYNC
 import com.example.xiangsugame.model.Level
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -40,6 +44,8 @@ class BattleSession(
     val myUserId: Int = AuthManager.session?.userId ?: -1,
     /** 展示用房间标识(网络=4 位房号;蓝牙=本机蓝牙名)。 */
     val roomTag: String = "",
+    /** 是否可断线重连(网络房重连 = 同一房号重新建会话;蓝牙近场直连不支持)。 */
+    val canReconnect: Boolean = false,
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -57,6 +63,16 @@ class BattleSession(
     /** 竞速开始后携带的完整关卡(含答案;服务器/主机下发的权威数据)。 */
     var raceLevel by mutableStateOf<Level?>(null)
         private set
+
+    /** 服务器(主机)宣布起跑的服务器时刻(ms),配合时钟差还原权威计时。 */
+    var serverStartMs by mutableLongStateOf(0L)
+        private set
+
+    /** 服务器时钟 - 本机时钟 的差值(ms),由 timeSync 握手一次校准(NTP)。 */
+    var clockOffsetMs by mutableLongStateOf(0L)
+        private set
+
+    private var syncSentAt = 0L
 
     /** 我是否已完成并提交(等待服务器确认名次)。 */
     var mySubmitted by mutableStateOf(false)
@@ -113,6 +129,18 @@ class BattleSession(
         notice = null
     }
 
+    /** 本机时钟换算成服务器时钟(offset 由 timeSync 校准);未校准前即为本机时间。 */
+    fun serverNowMs(): Long = System.currentTimeMillis() + clockOffsetMs
+
+    /**
+     * 请求一次 timeSync 校准:记录本地发送时刻,收到回包后按往返时延折半
+     * 计算服务器与本机时钟差。在任何 roomState / raceStart 后调用一次即可。
+     */
+    fun requestTimeSync() {
+        syncSentAt = System.currentTimeMillis()
+        transport.send(BattleProtocol.encode(BattleProtocol.UP_TIME_SYNC))
+    }
+
     // ---------------- 上行动作 ----------------
 
     /** 房主选题:level 为完整关卡(内置关直接传,在线关先 fetch 完整 JSON)。 */
@@ -126,6 +154,11 @@ class BattleSession(
     /** 房主开局(≥2 人且已选题才被服务器接受)。 */
     fun requestStart() {
         transport.send(BattleProtocol.encode(BattleProtocol.UP_START))
+    }
+
+    /** 房主重赛:结算后回到 lobby,可重新选题再开一局(服务器校验仅房主有效)。 */
+    fun requestRematch() {
+        transport.send(BattleProtocol.encode(BattleProtocol.UP_REMATCH))
     }
 
     /** 竞速中的进度上报(本地 1s 节流,服务器另有 0.5s 节流)。 */
@@ -165,6 +198,15 @@ class BattleSession(
                 hostId = st.hostId
                 players = st.players
                 puzzleName = st.puzzleName
+                requestTimeSync()
+                if (st.phase == "lobby") {
+                    // 重赛/回到待机:清空上局竞速与结算状态
+                    raceLevel = null
+                    serverStartMs = 0L
+                    mySubmitted = false
+                    resultEntries = emptyList()
+                    myFinalRank = 0
+                }
             }
 
             DOWN_PLAYER_LEFT -> {
@@ -176,10 +218,18 @@ class BattleSession(
                 val st = BattleProtocol.parse<BattleProtocol.RaceStartPayload>(payload) ?: return
                 phase = BattlePhase.RACING
                 raceLevel = st.level.toModel()
+                serverStartMs = st.serverStartMs
                 mySubmitted = false
+                requestTimeSync()
                 players = players.map {
                     if (it.userId == myUserId) it.copy(finishedRank = 0) else it.copy(filled = 0, finishedRank = 0)
                 }
+            }
+
+            DOWN_TIME_SYNC -> {
+                val p = BattleProtocol.parse<BattleProtocol.TimeSyncPayload>(payload) ?: return
+                val rtt = System.currentTimeMillis() - syncSentAt
+                clockOffsetMs = p.serverTimeMs - System.currentTimeMillis() + rtt / 2
             }
 
             DOWN_PROGRESS -> {

@@ -14,9 +14,10 @@ import kotlinx.serialization.json.put
  * 对战线协议 —— 一次成型,网络与蓝牙双端复用同一 schema:
  * 帧 = {"type": "...", "payload": {...}},两端实现完全同构。
  *
- * 上行(客户端→服务器): ready / start / choosePuzzle / progress / finish / ping / leave
+ * 上行(客户端→服务器): ready / start / choosePuzzle / progress / finish / ping /
+ *                     rematch(重赛) / timeSync(NTP 校时)
  * 下行(服务器→客户端): roomState / playerJoined / playerLeft / raceStart /
- *                     progress / finished / result / error
+ *                     progress / finished / result / error / timeSync
  * 蓝牙端借同一字段名直接互发(去掉房间语义字段,主机兼做"服务器"校验)。
  */
 object BattleProtocol {
@@ -28,6 +29,8 @@ object BattleProtocol {
     const val UP_PROGRESS = "progress"
     const val UP_FINISH = "finish"
     const val UP_PING = "ping"
+    const val UP_REMATCH = "rematch"
+    const val UP_TIME_SYNC = "timeSync"
 
     // ---- 蓝牙直连握手 ----
     const val BT_HELLO = "hello"
@@ -41,6 +44,7 @@ object BattleProtocol {
     const val DOWN_FINISHED = "finished"
     const val DOWN_RESULT = "result"
     const val DOWN_ERROR = "error"
+    const val DOWN_TIME_SYNC = "timeSync"
 
     // ---------------- 负载 DTO ----------------
 
@@ -90,6 +94,9 @@ object BattleProtocol {
 
     @Serializable
     data class FinishUpPayload(val grid: List<List<Int>>, val elapsedMs: Long)
+
+    @Serializable
+    data class TimeSyncPayload(val serverTimeMs: Long = 0L)
 
     @Serializable
     data class HelloPayload(val userId: Int, val nickname: String)
