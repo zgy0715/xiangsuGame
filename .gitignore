@@ -13,3 +13,7 @@ local.properties
 # Python (tools/)
 __pycache__/
 *.pyc
+
+# Server (FastAPI) runtime artifacts
+server/xiangsu.db*
+.kotlin/
