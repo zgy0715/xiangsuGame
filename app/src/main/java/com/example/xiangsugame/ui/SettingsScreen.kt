@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -27,6 +28,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -57,6 +59,7 @@ fun SettingsScreen(
     var url by remember { mutableStateOf(LocalSettings.serverUrl) }
     var testing by remember { mutableStateOf(false) }
     var testResult by remember { mutableStateOf<String?>(null) }
+    var showNicknameDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     Column(
@@ -143,15 +146,23 @@ fun SettingsScreen(
             }
 
             SettingsCard("👤 账号") {
+                val isGuest = AuthManager.isGuest
                 val nickname = AuthManager.session?.nickname ?: "-"
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(nickname, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Ink)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        "用户 #${AuthManager.session?.userId ?: "-"}",
+                        if (isGuest) "游客(离线)" else "用户 #${AuthManager.session?.userId ?: "-"}",
                         fontSize = 11.sp, color = Cocoa,
                     )
                 }
+                Spacer(modifier = Modifier.height(10.dp))
+                OutlinedButton(
+                    onClick = { showNicknameDialog = true },
+                    enabled = !isGuest,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(if (isGuest) "游客离线身份,登录后可改昵称" else "修改昵称") }
+                Spacer(modifier = Modifier.height(4.dp))
                 OutlinedButton(
                     onClick = { AuthManager.logout() },
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
@@ -162,6 +173,87 @@ fun SettingsScreen(
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
+
+    if (showNicknameDialog) {
+        NicknameDialog(
+            current = AuthManager.session?.nickname.orEmpty(),
+            onDismiss = { showNicknameDialog = false },
+        )
+    }
+}
+
+/** 修改昵称弹窗:本地校验长度 → 提交服务端 → 成功后同步本地会话。 */
+@Composable
+private fun NicknameDialog(current: String, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf(current) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun submit() {
+        val trimmed = name.trim()
+        when {
+            trimmed.isEmpty() -> error = "昵称不能为空"
+            trimmed.length > 20 -> error = "昵称最多 20 个字符"
+            busy -> return
+            else -> {
+                busy = true
+                error = null
+                scope.launch {
+                    AuthManager.changeNickname(trimmed)
+                        .onSuccess { onDismiss() }
+                        .onFailure { error = it.message ?: "修改失败" }
+                    busy = false
+                }
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("修改昵称", fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        if (it.length <= 20) {
+                            name = it
+                            error = null
+                        }
+                    },
+                    singleLine = true,
+                    label = { Text("新昵称(≤20 字)") },
+                    isError = error != null,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let {
+                    Text(
+                        "⚠ $it",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                Text(
+                    "排行榜、对局名次等展示用昵称,提交后即时生效",
+                    fontSize = 11.sp,
+                    color = Cocoa,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            if (busy) {
+                CircularProgressIndicator(modifier = Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
+            } else {
+                Button(onClick = { submit() }) { Text("保存") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
+        },
+    )
 }
 
 @Composable

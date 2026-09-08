@@ -8,6 +8,8 @@ import com.example.xiangsugame.api.dto.LevelDto
 import com.example.xiangsugame.api.dto.LoginRequest
 import com.example.xiangsugame.api.dto.LoginResponse
 import com.example.xiangsugame.api.dto.MeResponse
+import com.example.xiangsugame.api.dto.NicknameRequest
+import com.example.xiangsugame.api.dto.NicknameResponse
 import com.example.xiangsugame.api.dto.SubmitRecordRequest
 import com.example.xiangsugame.api.dto.SubmitRecordResponse
 import retrofit2.http.Body
@@ -28,6 +30,9 @@ interface GameApi {
 
     @GET("api/auth/me")
     suspend fun me(): MeResponse
+
+    @POST("api/auth/nickname")
+    suspend fun updateNickname(@Body body: NicknameRequest): NicknameResponse
 
     @POST("api/auth/logout")
     suspend fun logout(): Unit

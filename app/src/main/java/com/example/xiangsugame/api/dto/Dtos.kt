@@ -93,6 +93,13 @@ data class LoginResponse(val userId: Int, val token: String, val nickname: Strin
 @Serializable
 data class MeResponse(val userId: Int, val nickname: String)
 
+/** 昵称修改:请求携带新昵称,服务端规范化后返回。 */
+@Serializable
+data class NicknameRequest(val nickname: String)
+
+@Serializable
+data class NicknameResponse(val nickname: String)
+
 // ---------------- 排行榜 ----------------
 
 @Serializable

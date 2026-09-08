@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import com.example.xiangsugame.api.ApiClient
 import com.example.xiangsugame.api.dto.LoginRequest
 import com.example.xiangsugame.api.dto.LoginResponse
+import com.example.xiangsugame.api.dto.NicknameRequest
 import kotlin.random.Random
 
 /**
@@ -75,6 +76,14 @@ object AuthManager {
         val code = Random.nextBytes(16).joinToString("") { "%02x".format(it) }
         prefs.edit().putString(KEY_MOCK_CODE, code).apply()
         return code
+    }
+
+    /** 修改昵称:提交服务端持久化,成功后在本地会话同步。游客为离线身份,不支持。 */
+    suspend fun changeNickname(newName: String): Result<String> = runCatching {
+        if (isGuest) error("游客为离线身份,登录后即可修改昵称")
+        val resp = ApiClient.api().updateNickname(NicknameRequest(newName))
+        updateNickname(resp.nickname)
+        resp.nickname
     }
 
     /** 修改昵称后的本地会话同步(服务端改昵称成功后调用)。 */
