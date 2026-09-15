@@ -92,3 +92,47 @@ def leaderboard(puzzleId: int,
     finally:
         conn.close()
     return {"puzzleId": puzzleId, "entries": entries, "myBest": my_best}
+
+
+def compute_my_puzzles(conn, user_id, limit=20):
+    """我留下过成绩的题(按最近一次成绩倒序),供客户端"选题目看榜"。
+
+    内置关(puzzle_id > 0)只存在于客户端 Levels.kt、不在服务端 puzzles 表里,
+    所以这里对它们不返回名称,由客户端用本地关卡表补;在线关(负 id)取题名与难度。
+    """
+    rows = conn.execute(
+        "SELECT puzzle_id AS puzzleId, MAX(finished_at) AS lastAt, COUNT(*) AS plays "
+        "FROM solve_records WHERE user_id = ? "
+        "GROUP BY puzzle_id ORDER BY lastAt DESC LIMIT ?",
+        (user_id, min(limit, 50))).fetchall()
+    out = []
+    for r in rows:
+        pid = r["puzzleId"]
+        meta = None
+        if pid < 0:
+            meta = conn.execute(
+                "SELECT name, difficulty FROM puzzles WHERE puzzle_id = ?", (pid,)).fetchone()
+        out.append({
+            "puzzleId": pid,
+            "name": meta["name"] if meta else None,
+            "difficulty": meta["difficulty"] if meta else None,
+            "source": "online" if pid < 0 else "builtin",
+            "plays": r["plays"],
+            "lastAt": r["lastAt"],
+        })
+    return out
+
+
+@router.get("/my-puzzles")
+def my_puzzles(limit: int = Query(20, ge=1, le=50), user=Depends(current_user)):
+    """当前登录用户打过分的题目列表。
+
+    网络对战允许房主选"内置关",这类成绩的 puzzle_id 为正数且不在 puzzles 表里,
+    因此客户端需要用本地关卡表补名称 —— 这也是排行榜"对战榜"为空的原因之一:
+    此前页面只查"今日每日一题",而对战往往是别的题。
+    """
+    conn = db.connect()
+    try:
+        return {"items": compute_my_puzzles(conn, user["user_id"], limit)}
+    finally:
+        conn.close()
