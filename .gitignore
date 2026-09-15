@@ -17,3 +17,8 @@ __pycache__/
 # Server (FastAPI) runtime artifacts
 server/xiangsu.db*
 .kotlin/
+
+# 本机发信密钥(邮箱授权码):绝不进版本库,见 server/smtp.env.example
+server/smtp.env
+*.env
+!*.env.example

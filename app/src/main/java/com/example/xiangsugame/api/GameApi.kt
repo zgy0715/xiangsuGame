@@ -8,8 +8,11 @@ import com.example.xiangsugame.api.dto.LevelDto
 import com.example.xiangsugame.api.dto.LoginRequest
 import com.example.xiangsugame.api.dto.LoginResponse
 import com.example.xiangsugame.api.dto.MeResponse
+import com.example.xiangsugame.api.dto.MyPuzzlesResponse
 import com.example.xiangsugame.api.dto.NicknameRequest
 import com.example.xiangsugame.api.dto.NicknameResponse
+import com.example.xiangsugame.api.dto.SendCodeRequest
+import com.example.xiangsugame.api.dto.SendCodeResponse
 import com.example.xiangsugame.api.dto.SubmitRecordRequest
 import com.example.xiangsugame.api.dto.SubmitRecordResponse
 import retrofit2.http.Body
@@ -24,7 +27,10 @@ import retrofit2.http.Query
  */
 interface GameApi {
 
-    // ---- 认证(无用户名密码:小程序风格 code → openid) ----
+    // ---- 认证(无用户名密码:邮箱 → 6 位验证码 → Bearer token) ----
+    @POST("api/auth/send-code")
+    suspend fun sendCode(@Body body: SendCodeRequest): SendCodeResponse
+
     @POST("api/auth/login")
     suspend fun login(@Body body: LoginRequest): LoginResponse
 
@@ -65,4 +71,8 @@ interface GameApi {
         @Query("source") source: String? = null,
         @Query("limit") limit: Int = 10,
     ): LeaderboardResponse
+
+    /** 我打过分的题目列表(含网络对战里的内置关),供排行榜"选题目看榜"。 */
+    @GET("api/leaderboard/my-puzzles")
+    suspend fun myPuzzles(@Query("limit") limit: Int = 20): MyPuzzlesResponse
 }

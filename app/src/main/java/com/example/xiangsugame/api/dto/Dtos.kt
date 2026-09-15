@@ -82,10 +82,30 @@ fun Level.toDto(): LevelDto = LevelDto(
     solves = null,
 )
 
-// ---------------- 认证(模拟微信小程序一键登录) ----------------
+// ---------------- 认证(邮箱 + 6 位验证码) ----------------
+
+/** 第一步:请求发送验证码;服务端规范化邮箱后返回有效期与重发间隔。 */
+@Serializable
+data class SendCodeRequest(val email: String)
 
 @Serializable
-data class LoginRequest(val code: String, val nickname: String? = null)
+data class SendCodeResponse(
+    val email: String,
+    val expiresInSeconds: Int,
+    val resendAfterSeconds: Int,
+    /** true = SMTP 真发成功;false = 服务端回退到控制台打印(开发/演示兜底)。 */
+    val delivered: Boolean = false,
+    /** 仅服务端开启 XIANGSU_ECHO_CODE 时返回,便于局域网真机演示。 */
+    val devCode: String? = null,
+)
+
+/** 第二步:验证码登录;isNew 用于引导首次登录设置昵称。 */
+@Serializable
+data class LoginRequest(
+    val email: String,
+    val code: String,
+    val nickname: String? = null,
+)
 
 @Serializable
 data class LoginResponse(val userId: Int, val token: String, val nickname: String, val isNew: Boolean)
@@ -123,6 +143,24 @@ data class LeaderboardResponse(
 
 @Serializable
 data class CreateRoomResponse(val roomId: String)
+
+/**
+ * 我打过分的题(用于排行榜"选题目看榜")。
+ * 内置关(puzzleId > 0)的名称/难度由客户端本地关卡表补;在线关由服务端给出。
+ */
+@Serializable
+data class PlayedPuzzle(
+    val puzzleId: Int,
+    val name: String? = null,
+    val difficulty: String? = null,
+    /** "online" = 在线关(负 id);"builtin" = 内置关(正 id)。 */
+    val source: String = "online",
+    val plays: Int = 0,
+    val lastAt: String? = null,
+)
+
+@Serializable
+data class MyPuzzlesResponse(val items: List<PlayedPuzzle> = emptyList())
 
 /** 服务端错误体: {"error": "..."}(FastAPI HTTPException detail 透传)。 */
 @Serializable

@@ -9,6 +9,8 @@
 
 局域网演示:手机与电脑同一 Wi-Fi,电脑防火墙放行 8000 端口,
 App「设置」里把服务器地址填成 http://<电脑局域网IP>:8000。
+登录为「邮箱 + 6 位验证码」:配置 XIANGSU_SMTP_* 后真实发信,未配置则验证码打印在
+控制台(见 config.py / mailer.py)。
 启动即建表,后台线程预热题库(EASY/MEDIUM/HARD 各保底若干题)。
 """
 import threading
@@ -19,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import content
 import db
+import mailer
 from auth import router as auth_router
 from config import BANK_TARGET
 from leaderboard import router as leaderboard_router
@@ -44,6 +47,7 @@ def warm_bank():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_db()
+    db.purge_expired_otps()  # 清理历史验证码记录
     threading.Thread(target=warm_bank, daemon=True).start()
     yield
 
@@ -66,4 +70,5 @@ def root():
     return {"name": "xiangsu-game-server",
             "message": "像素填空服务端在线",
             "docs": "/docs",
-            "mockWechat": True}
+            "login": "email-otp",
+            "smtp": mailer.smtp_configured()}

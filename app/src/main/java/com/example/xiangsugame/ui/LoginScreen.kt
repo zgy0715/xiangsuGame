@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,6 +33,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,38 +44,96 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.xiangsugame.api.ApiClient
 import com.example.xiangsugame.auth.AuthManager
+import com.example.xiangsugame.auth.LoginRules
 import com.example.xiangsugame.data.LocalSettings
 import com.example.xiangsugame.model.Levels
+import com.example.xiangsugame.service.SoundEffectManager
 import com.example.xiangsugame.ui.theme.Cocoa
+import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Ink
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+/** 登录流程所处的步骤。 */
+private enum class LoginStep { EMAIL, CODE }
+
 /**
- * 登录页 —— 一键"微信授权登录"(连服务器);连不上服务器可直接「游客进入」离线玩。
- * 登录成功 / 游客进入后由根导航监听 AuthManager.session 自动进首页。
+ * 登录页 —— 邮箱 + 6 位验证码两步式:
+ *   ① 输入邮箱 → 请求发码(服务端 SMTP 发信,未配置则打印在服务端控制台)
+ *   ② 填入 6 位码 → 校验通过即签发 token → 根导航自动进首页
+ * 连不上服务器时可直接「游客进入」离线玩内置关。
  */
 @Composable
 fun LoginScreen(
     modifier: Modifier = Modifier,
 ) {
+    var step by remember { mutableStateOf(LoginStep.EMAIL) }
+    var email by remember { mutableStateOf(AuthManager.lastEmail) }
+    var code by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var devCode by remember { mutableStateOf<String?>(null) }
+    var countdown by remember { mutableStateOf(0) }
     var showServerDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
-    fun doLogin() {
+    // 重发倒计时(服务端 60 秒重发间隔,本地同步显示)
+    LaunchedEffect(step, countdown) {
+        if (step == LoginStep.CODE && countdown > 0) {
+            delay(1000)
+            countdown = LoginRules.tick(countdown)
+        }
+    }
+
+    fun sendCode(isResend: Boolean) {
         if (busy) return
+        AuthManager.validateEmail(email)?.let { error = it; return }
+        SoundEffectManager.click()
         busy = true
         error = null
         scope.launch {
-            AuthManager.loginMockWechat()
-                .onFailure { error = it.message ?: "登录失败,请检查服务器连接" }
+            AuthManager.requestEmailCode(email)
+                .onSuccess { resp ->
+                    step = LoginStep.CODE
+                    code = ""
+                    countdown = resp.resendAfterSeconds
+                    devCode = resp.devCode
+                    notice = if (resp.delivered) {
+                        "验证码已发送至 ${resp.email},请查收(含垃圾箱)"
+                    } else if (resp.devCode != null) {
+                        "演示模式:服务器未配置 SMTP,验证码已显示在下方"
+                    } else {
+                        "服务器未配置 SMTP,验证码已打印在服务端控制台"
+                    }
+                    if (isResend) notice = "已重新发送,请使用最新收到的验证码"
+                }
+                .onFailure { error = it.message ?: "发送失败,请检查服务器连接" }
+            busy = false
+        }
+    }
+
+    fun doLogin() {
+        if (busy) return
+        if (!LoginRules.canSubmit(code)) {
+            error = "请输入 6 位数字验证码"
+            return
+        }
+        SoundEffectManager.click()
+        busy = true
+        error = null
+        scope.launch {
+            AuthManager.loginWithEmailCode(email, code)
+                .onSuccess { SoundEffectManager.win() }
+                .onFailure { error = it.message ?: "登录失败,请重试" }
             busy = false
         }
     }
@@ -138,45 +198,179 @@ fun LoginScreen(
             modifier = Modifier.padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(modifier = Modifier.height(30.dp))
+            Spacer(modifier = Modifier.height(26.dp))
 
-            // —— 一键微信登录(需连服务器)——
-            val wechatBrush = if (busy) {
-                Brush.verticalGradient(listOf(Color(0xFF5AAE7C), Color(0xFF5AAE7C)))
-            } else {
-                Brush.horizontalGradient(listOf(Color(0xFF4CB964), Color(0xFF28A745)))
-            }
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(54.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(wechatBrush)
-                    .clickable(enabled = !busy, onClick = { doLogin() }),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-            ) {
-                if (busy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(22.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp,
+            when (step) {
+                LoginStep.EMAIL -> {
+                    Text(
+                        "邮箱验证码登录",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Ink,
+                        letterSpacing = 1.sp,
                     )
-                    Spacer(modifier = Modifier.width(10.dp))
-                } else {
-                    Text("💬", fontSize = 20.sp)
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        "输入邮箱,我们会发送 6 位验证码;首次登录自动注册",
+                        fontSize = 12.sp,
+                        color = Cocoa,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 18.sp,
+                        modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
+                    )
+                    Text(
+                        "服务器未配 SMTP 时,验证码会直接显示在下一步(演示模式)",
+                        fontSize = 10.sp,
+                        color = Cocoa,
+                        textAlign = TextAlign.Center,
+                        lineHeight = 14.sp,
+                        modifier = Modifier.padding(bottom = 16.dp),
+                    )
+
+                    OutlinedTextField(
+                        value = email,
+                        onValueChange = {
+                            email = it.trim()
+                            error = null
+                        },
+                        singleLine = true,
+                        label = { Text("邮箱") },
+                        placeholder = { Text("you@example.com") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                        isError = error != null,
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    PrimaryButton(
+                        text = if (busy) "正在发送…" else "获取验证码",
+                        enabled = !busy,
+                        busy = busy,
+                        onClick = { sendCode(isResend = false) },
+                    )
                 }
+
+                LoginStep.CODE -> {
+                    Text(
+                        "输入验证码",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Black,
+                        color = Ink,
+                        letterSpacing = 1.sp,
+                    )
+                    Text(
+                        "已发送至 ${email.trim()}",
+                        fontSize = 12.sp,
+                        color = Cocoa,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                    TextButton(
+                        onClick = {
+                            SoundEffectManager.click()
+                            step = LoginStep.EMAIL
+                            code = ""
+                            error = null
+                            notice = null
+                        },
+                        enabled = !busy,
+                    ) { Text("← 换个邮箱", fontSize = 12.sp, color = Coral) }
+
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { input ->
+                            val digits = LoginRules.formatCode(input)
+                            code = digits
+                            error = null
+                            // 填满 6 位自动提交,省一次点击
+                            if (LoginRules.canSubmit(digits) && !busy) doLogin()
+                        },
+                        singleLine = true,
+                        label = { Text("6 位验证码") },
+                        placeholder = { Text("______") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                        textStyle = TextStyle(
+                            fontSize = 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 8.sp,
+                            textAlign = TextAlign.Center,
+                            color = Ink,
+                        ),
+                        isError = error != null,
+                        enabled = !busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    if (devCode != null) {
+                        // 演示模式:服务端未配 SMTP 时自动回显验证码,用户无需看控制台即可登录
+                        Text(
+                            "演示模式验证码",
+                            fontSize = 11.sp,
+                            color = Cocoa,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                        Text(
+                            devCode!!,
+                            fontSize = 32.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 6.sp,
+                            color = Coral,
+                            modifier = Modifier.padding(top = 2.dp),
+                        )
+                        Text(
+                            "配置 SMTP 后此提示自动消失",
+                            fontSize = 10.sp,
+                            color = Cocoa,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    PrimaryButton(
+                        text = if (busy) "正在登录…" else "登录",
+                        enabled = !busy && LoginRules.canSubmit(code),
+                        busy = busy,
+                        onClick = { doLogin() },
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    TextButton(
+                        onClick = { sendCode(isResend = true) },
+                        enabled = !busy && LoginRules.canResend(countdown),
+                    ) {
+                        Text(
+                            LoginRules.resendLabel(countdown),
+                            fontSize = 12.sp,
+                            color = if (LoginRules.canResend(countdown)) Coral else Cocoa,
+                        )
+                    }
+                }
+            }
+
+            notice?.let {
                 Text(
-                    if (busy) "正在登录…" else "微信授权登录",
-                    fontSize = 17.sp,
-                    fontWeight = FontWeight.Black,
-                    color = Color.White,
-                    letterSpacing = 1.sp,
+                    "✓ $it",
+                    fontSize = 12.sp,
+                    color = Color(0xFF66BB6A),
+                    textAlign = TextAlign.Center,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+            error?.let {
+                Text(
+                    "⚠ $it",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 10.dp),
                 )
             }
 
-            Spacer(modifier = Modifier.height(12.dp))
+            Spacer(modifier = Modifier.height(18.dp))
 
             // —— 游客进入(免登录,离线也能玩)——
             Row(
@@ -185,7 +379,7 @@ fun LoginScreen(
                     .height(50.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .border(1.dp, Color(0x40FFFFFF), RoundedCornerShape(16.dp))
-                    .clickable(enabled = !busy, onClick = { AuthManager.enterGuest() }),
+                    .clickable(enabled = !busy, onClick = { SoundEffectManager.click(); AuthManager.enterGuest() }),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
             ) {
@@ -199,17 +393,7 @@ fun LoginScreen(
                 )
             }
 
-            if (error != null) {
-                Text(
-                    "⚠ $error",
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.error,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(top = 12.dp),
-                )
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(14.dp))
 
             // —— 服务器设置入口 ——
             TextButton(onClick = { showServerDialog = true }) {
@@ -226,6 +410,47 @@ fun LoginScreen(
 
     if (showServerDialog) {
         ServerUrlDialog(onDismiss = { showServerDialog = false })
+    }
+}
+
+/** 主操作按钮(品牌渐变,忙碌时显示进度)。 */
+@Composable
+private fun PrimaryButton(
+    text: String,
+    enabled: Boolean,
+    busy: Boolean,
+    onClick: () -> Unit,
+) {
+    val brush = if (enabled) {
+        Brush.horizontalGradient(listOf(Color(0xFF7A68F2), Color(0xFF5647C9)))
+    } else {
+        Brush.horizontalGradient(listOf(Color(0xFF4A4470), Color(0xFF3B3659)))
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(brush)
+            .clickable(enabled = enabled, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        if (busy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                color = Color.White,
+                strokeWidth = 2.dp,
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+        }
+        Text(
+            text,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Black,
+            color = Color.White,
+            letterSpacing = 1.sp,
+        )
     }
 }
 
