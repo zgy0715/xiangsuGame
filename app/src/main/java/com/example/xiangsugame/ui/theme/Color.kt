@@ -13,17 +13,14 @@ import androidx.compose.ui.graphics.Color
 
 // —— 品牌三主色（深色底上直接可用的高亮度取值）——
 val Coral = Color(0xFF8B7CFF)         // 品牌靛紫（亮）：主操作、强调（旧名沿用）
-val CoralDark = Color(0xFF8B7CFF)     // 兼容旧引用：与 Coral 同值
 val CoralContainer = Color(0xFF3C2FA0)    // 主色容器：深紫底
 val CoralDeep = Color(0xFF5E4FD1)     // 品牌紫的渐变深端
 val GlowPurple = Color(0xFFB06CF7)    // 品牌紫的渐变亮端 / 光晕色
 
 val Cyan = Color(0xFF5EDDD8)          // 湖水青（亮）：次操作、正向反馈
-val CyanDark = Color(0xFF5EDDD8)      // 兼容旧引用
 val CyanContainer = Color(0xFF00514E)
 
-val Amber = Color(0xFFFFC85C)         // 暖金：星级、管理员身份
-val AmberDark = Color(0xFFFFC85C)     // 兼容旧引用
+val Amber = Color(0xFFFFC85C)         // 暖金：星级、榜首
 val AmberContainer = Color(0xFF574100)
 
 // —— 通用语义色（深夜画室基底；名称沿用旧版，取值已切换为深色观感）——

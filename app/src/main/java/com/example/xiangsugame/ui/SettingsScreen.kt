@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -39,19 +38,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.xiangsugame.api.ApiClient
 import com.example.xiangsugame.auth.AuthManager
 import com.example.xiangsugame.data.LocalSettings
+import com.example.xiangsugame.service.SoundEffectManager
 import com.example.xiangsugame.ui.theme.Cocoa
 import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Ink
 import kotlinx.coroutines.launch
 
-/** 设置页:服务器地址 / 关卡解锁 / 账号 / 退出登录。 */
-@Composable
+/** 设置页:服务器地址 / 关卡解锁 / 账号 / 退出登录。 */@Composable
 fun SettingsScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
@@ -61,6 +61,7 @@ fun SettingsScreen(
     var testResult by remember { mutableStateOf<String?>(null) }
     var showNicknameDialog by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     Column(
         modifier = modifier
@@ -96,6 +97,7 @@ fun SettingsScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(
                         onClick = {
+                            SoundEffectManager.click()
                             LocalSettings.saveServerUrl(url)
                             testResult = "已保存,测试连接…"
                             testing = true
@@ -139,7 +141,54 @@ fun SettingsScreen(
                     )
                     Switch(
                         checked = LocalSettings.demoAllUnlocked,
-                        onCheckedChange = { LocalSettings.saveDemoAllUnlocked(it) },
+                        onCheckedChange = { SoundEffectManager.click(); LocalSettings.saveDemoAllUnlocked(it) },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Coral),
+                    )
+                }
+            }
+
+            SettingsCard("🎵 体验") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "音效",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Ink,
+                        )
+                        Text(
+                            "点击 / 通关 / 检查出错的提示音",
+                            fontSize = 11.sp,
+                            color = Cocoa,
+                        )
+                    }
+                    Switch(
+                        checked = LocalSettings.musicEnabled,
+                        onCheckedChange = { enabled ->
+                            SoundEffectManager.click()
+                            LocalSettings.saveMusicEnabled(enabled)
+                        },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Coral),
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "摇一摇重置棋盘",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Ink,
+                        )
+                        Text(
+                            "游戏中摇晃手机重置当前棋盘(加速度传感器)",
+                            fontSize = 11.sp,
+                            color = Cocoa,
+                        )
+                    }
+                    Switch(
+                        checked = LocalSettings.shakeToResetEnabled,
+                        onCheckedChange = { SoundEffectManager.click(); LocalSettings.saveShakeEnabled(it) },
                         colors = SwitchDefaults.colors(checkedTrackColor = Coral),
                     )
                 }
@@ -148,6 +197,7 @@ fun SettingsScreen(
             SettingsCard("👤 账号") {
                 val isGuest = AuthManager.isGuest
                 val nickname = AuthManager.session?.nickname ?: "-"
+                val accountEmail = AuthManager.session?.email.orEmpty()
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(nickname, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Ink)
                     Spacer(modifier = Modifier.width(8.dp))
@@ -156,18 +206,26 @@ fun SettingsScreen(
                         fontSize = 11.sp, color = Cocoa,
                     )
                 }
+                if (!isGuest) {
+                    Text(
+                        "登录邮箱:${accountEmail.ifBlank { "-" }}",
+                        fontSize = 11.sp,
+                        color = Cocoa,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
                 Spacer(modifier = Modifier.height(10.dp))
                 OutlinedButton(
-                    onClick = { showNicknameDialog = true },
+                    onClick = { SoundEffectManager.click(); showNicknameDialog = true },
                     enabled = !isGuest,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (isGuest) "游客离线身份,登录后可改昵称" else "修改昵称") }
                 Spacer(modifier = Modifier.height(4.dp))
                 OutlinedButton(
-                    onClick = { AuthManager.logout() },
+                    onClick = { SoundEffectManager.click(); AuthManager.logout() },
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("退出登录") }
+                ) { Text(if (isGuest) "返回登录页" else "退出登录") }
             }
 
             Spacer(modifier = Modifier.height(24.dp))
@@ -182,79 +240,7 @@ fun SettingsScreen(
     }
 }
 
-/** 修改昵称弹窗:本地校验长度 → 提交服务端 → 成功后同步本地会话。 */
-@Composable
-private fun NicknameDialog(current: String, onDismiss: () -> Unit) {
-    var name by remember { mutableStateOf(current) }
-    var busy by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    val scope = rememberCoroutineScope()
-
-    fun submit() {
-        val trimmed = name.trim()
-        when {
-            trimmed.isEmpty() -> error = "昵称不能为空"
-            trimmed.length > 20 -> error = "昵称最多 20 个字符"
-            busy -> return
-            else -> {
-                busy = true
-                error = null
-                scope.launch {
-                    AuthManager.changeNickname(trimmed)
-                        .onSuccess { onDismiss() }
-                        .onFailure { error = it.message ?: "修改失败" }
-                    busy = false
-                }
-            }
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = { if (!busy) onDismiss() },
-        title = { Text("修改昵称", fontWeight = FontWeight.Bold) },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = {
-                        if (it.length <= 20) {
-                            name = it
-                            error = null
-                        }
-                    },
-                    singleLine = true,
-                    label = { Text("新昵称(≤20 字)") },
-                    isError = error != null,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                error?.let {
-                    Text(
-                        "⚠ $it",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
-                Text(
-                    "排行榜、对局名次等展示用昵称,提交后即时生效",
-                    fontSize = 11.sp,
-                    color = Cocoa,
-                    modifier = Modifier.padding(top = 8.dp),
-                )
-            }
-        },
-        confirmButton = {
-            if (busy) {
-                CircularProgressIndicator(modifier = Modifier.width(20.dp).height(20.dp), strokeWidth = 2.dp)
-            } else {
-                Button(onClick = { submit() }) { Text("保存") }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !busy) { Text("取消") }
-        },
-    )
-}
+/** 修改昵称弹窗见 Widgets.kt 的共享实现([NicknameDialog])。 */
 
 @Composable
 private fun SettingsCard(title: String, content: @Composable () -> Unit) {

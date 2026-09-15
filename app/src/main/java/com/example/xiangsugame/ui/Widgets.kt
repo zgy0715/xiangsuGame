@@ -14,11 +14,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,10 +36,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.xiangsugame.auth.AuthManager
 import com.example.xiangsugame.ui.theme.Cocoa
 import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.GlowPurple
 import com.example.xiangsugame.ui.theme.Ink
+import kotlinx.coroutines.launch
 
 // ============================================================
 // 共享游戏控件 —— 分段选择 / 渐变主按钮 / 玻璃胶囊
@@ -190,4 +201,90 @@ fun ScreenTopBar(
         }
         if (action != null) action()
     }
+}
+
+/**
+ * 修改昵称弹窗:本地校验长度 → 提交服务端持久化 → 成功后同步本地会话。
+ * 两处复用:首次邮箱登录后的引导(根导航)与设置页的手动修改。
+ */
+@Composable
+fun NicknameDialog(
+    current: String,
+    onDismiss: () -> Unit,
+    title: String = "修改昵称",
+    hint: String = "排行榜、对局名次等展示用昵称,提交后即时生效",
+) {
+    var name by remember { mutableStateOf(current) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
+    fun submit() {
+        val trimmed = name.trim()
+        when {
+            trimmed.isEmpty() -> error = "昵称不能为空"
+            trimmed.length > 20 -> error = "昵称最多 20 个字符"
+            busy -> return
+            else -> {
+                busy = true
+                error = null
+                scope.launch {
+                    AuthManager.changeNickname(trimmed)
+                        .onSuccess { onDismiss() }
+                        .onFailure { error = it.message ?: "修改失败" }
+                    busy = false
+                }
+            }
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text(title, fontWeight = FontWeight.Bold) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        if (it.length <= 20) {
+                            name = it
+                            error = null
+                        }
+                    },
+                    singleLine = true,
+                    label = { Text("昵称(≤20 字)") },
+                    isError = error != null,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let {
+                    Text(
+                        "⚠ $it",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                Text(
+                    hint,
+                    fontSize = 11.sp,
+                    color = Cocoa,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
+        },
+        confirmButton = {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.width(20.dp).height(20.dp),
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                Button(onClick = { submit() }) { Text("保存") }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !busy) { Text("跳过") }
+        },
+    )
 }

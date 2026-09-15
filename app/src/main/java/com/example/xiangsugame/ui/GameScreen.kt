@@ -12,6 +12,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -41,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -55,11 +57,16 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import android.net.Uri
+import android.widget.VideoView
 import com.example.xiangsugame.data.AccountStore
+import com.example.xiangsugame.data.LocalSettings
 import com.example.xiangsugame.model.CellState
 import com.example.xiangsugame.model.Difficulty
 import com.example.xiangsugame.model.GameBoard
@@ -68,6 +75,8 @@ import com.example.xiangsugame.model.HintStep
 import com.example.xiangsugame.model.Level
 import com.example.xiangsugame.model.Validator
 import com.example.xiangsugame.model.nextHint
+import com.example.xiangsugame.sensor.ShakeDetector
+import com.example.xiangsugame.service.SoundEffectManager
 import com.example.xiangsugame.ui.theme.Amber
 import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Cyan
@@ -183,6 +192,7 @@ fun GameScreen(
     LaunchedEffect(level.id, isSolved) {
         if (isSolved && !solvedReported) {
             solvedReported = true
+            SoundEffectManager.win()
             if (level.id > 0) account.markCompleted(level.id) else account.recordOnlineSolved(level.id)
             val snapshot = gameBoard.board.map(IntArray::clone).toTypedArray()
             onSolved?.invoke(snapshot, elapsedSeconds)
@@ -203,6 +213,7 @@ fun GameScreen(
         hintStep = null // 提示格已按新盘面重算
         strokeTarget = null // 新一笔重新判定涂/擦方向
         gameBoard.startStroke()
+        SoundEffectManager.click() // 起笔音效(一笔响一次,避免连涂太吵)
     }
     val onStrokeCell: (Int, Int) -> Unit = { r, c ->
         val target = when (tool) {
@@ -225,27 +236,53 @@ fun GameScreen(
         boardVersion++
     }
     val onToolSelect: (PaintTool) -> Unit = {
+        SoundEffectManager.click()
         tool = it
         checkedWrong = null
     }
     val onUndo: () -> Unit = {
+        SoundEffectManager.click()
         checkedWrong = null
         hintStep = null
         if (gameBoard.undo()) boardVersion++
     }
     val onRedo: () -> Unit = {
+        SoundEffectManager.click()
         checkedWrong = null
         hintStep = null
         if (gameBoard.redo()) boardVersion++
     }
     val onReset: () -> Unit = {
+        SoundEffectManager.click()
         checkedWrong = null
         hintStep = null
         gameBoard.reset()
         elapsedSeconds = 0 // 重置也归零计时，视为重新开始
         boardVersion++
     }
+
+    // 摇一摇重置棋盘:加速度传感器,设置页开关控制;带"已摇"提示状态
+    val context = LocalContext.current
+    var shakeHint by remember(level.id) { mutableStateOf(false) }
+    val shakeEnabled = LocalSettings.shakeToResetEnabled
+    DisposableEffect(level.id, shakeEnabled) {
+        if (!shakeEnabled) return@DisposableEffect onDispose {}
+        val detector = ShakeDetector(context) {
+            onReset()
+            shakeHint = true
+        }
+        detector.start()
+        onDispose { detector.stop() }
+    }
+    // 摇一摇提示 1.2 秒后自动消失
+    LaunchedEffect(shakeHint) {
+        if (shakeHint) {
+            delay(1200)
+            shakeHint = false
+        }
+    }
     val onFill: () -> Unit = {
+        SoundEffectManager.click()
         if (account.useFill()) {
             gameBoard.applySolution(level.answerGrid)
             checkedWrong = null
@@ -253,9 +290,14 @@ fun GameScreen(
             boardVersion++
         }
     }
-    val onCheck: () -> Unit = { checkedWrong = validator.wrongCells(board) }
+    val onCheck: () -> Unit = {
+        val wrongs = validator.wrongCells(board)
+        checkedWrong = wrongs
+        if (wrongs.isEmpty()) SoundEffectManager.click() else SoundEffectManager.error()
+    }
     /** 「提示下一步」：以当前盘面为约束推导确定格（矛盾/完成时给文字说明）。 */
     val onHint: () -> Unit = {
+        SoundEffectManager.click()
         checkedWrong = null
         val step = nextHint(level.clueGrid, board)
         if (step.hasCell) hintStep = step else {
@@ -264,10 +306,12 @@ fun GameScreen(
         }
     }
     val onShowAnswer: () -> Unit = {
+        SoundEffectManager.click()
         peekedAnswer = true
         showAnswer = true
     }
     val onClearWrong: () -> Unit = {
+        SoundEffectManager.click()
         // 把检查出的所有错误格一键清回"未决定"（一条笔划 = 一步可撤销）
         gameBoard.startStroke()
         for ((r, c) in checkedWrong.orEmpty()) {
@@ -313,6 +357,24 @@ fun GameScreen(
                         fraction = progressFraction,
                     )
                     HintBar(hintStep = hintStep)
+                    if (shakeHint) {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 4.dp),
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF7E57C2).copy(alpha = 0.18f),
+                            border = BorderStroke(1.dp, Color(0xFF7E57C2).copy(alpha = 0.5f)),
+                        ) {
+                            Text(
+                                "📱 已摇一摇,棋盘已重置",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFFB39DDB),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            )
+                        }
+                    }
                     // 棋盘在剩余空间内居中，尺寸封顶 BoardMaxSizeWide，不再无限拉伸
                     Box(
                         modifier = Modifier
@@ -338,7 +400,6 @@ fun GameScreen(
                             showClues = !isSolved,
                             interactive = canInteract,
                             modifier = Modifier
-                                .fillMaxWidth()
                                 .widthIn(max = BoardMaxSizeWide),
                         )
                     }
@@ -408,25 +469,50 @@ fun GameScreen(
                     fraction = progressFraction,
                 )
                 HintBar(hintStep = hintStep)
-                BoardView(
-                    level = level,
-                    board = if (isSolved) level.answerGrid else board,
-                    satisfiedClues = satisfiedClues,
-                    revealedWrong = checkedWrong.orEmpty(),
-                    hintCell = hintStep?.let { it.row to it.col },
-                    tool = tool,
-                    onStrokeBegin = onStrokeBegin,
-                    onStrokeCell = onStrokeCell,
-                    onStrokeEnd = onStrokeEnd,
-                    onStrokeCancel = onStrokeCancel,
-                    showClues = !isSolved,
-                    interactive = canInteract,
+                if (shakeHint) {
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 4.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        color = Color(0xFF7E57C2).copy(alpha = 0.18f),
+                        border = BorderStroke(1.dp, Color(0xFF7E57C2).copy(alpha = 0.5f)),
+                    ) {
+                        Text(
+                            "📱 已摇一摇,棋盘已重置",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFB39DDB),
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                        )
+                    }
+                }
+                Box(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
                         .padding(top = 6.dp),
-                )
-                Spacer(modifier = Modifier.height(8.dp))
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BoardView(
+                        level = level,
+                        board = if (isSolved) level.answerGrid else board,
+                        satisfiedClues = satisfiedClues,
+                        revealedWrong = checkedWrong.orEmpty(),
+                        hintCell = hintStep?.let { it.row to it.col },
+                        tool = tool,
+                        onStrokeBegin = onStrokeBegin,
+                        onStrokeCell = onStrokeCell,
+                        onStrokeEnd = onStrokeEnd,
+                        onStrokeCancel = onStrokeCancel,
+                        showClues = !isSolved,
+                        interactive = canInteract,
+                        modifier = Modifier
+                            .widthIn(max = BoardMaxSizePortrait),
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                // —— 紧凑底部:工具行 + 一行6个操作小胶囊(撤销/重做/重置/提示/检查/补齐)——
                 ToolGroup(
                     selected = tool,
                     enabled = canInteract,
@@ -434,28 +520,29 @@ fun GameScreen(
                     stacked = false,
                 )
                 Spacer(modifier = Modifier.height(6.dp))
-                ActionGroup(
-                    canUndo = gameBoard.canUndo,
-                    canRedo = gameBoard.canRedo,
-                    onUndo = onUndo,
-                    onRedo = onRedo,
-                    onReset = onReset,
-                    stacked = false,
-                )
-                Spacer(modifier = Modifier.height(6.dp))
-                AssistGroup(
-                    stacked = false,
-                    checkEnabled = canInteract,
-                    fillEnabled = account.fillQuotaRemaining > 0 && canInteract,
-                    fillQuota = account.fillQuotaRemaining,
-                    checkedWrong = checkedWrong,
-                    onCheck = onCheck,
-                    onHint = onHint,
-                    onShowAnswer = onShowAnswer,
-                    onFill = onFill,
-                    onClearWrong = onClearWrong,
-                    onDismissCheck = { checkedWrong = null },
-                )
+                // 检查出错误时切换到清错条;否则一行6个紧凑按钮
+                if (checkedWrong != null) {
+                    CheckResultBar(
+                        wrongCount = checkedWrong!!.size,
+                        onClearWrong = onClearWrong,
+                        onDismiss = { checkedWrong = null },
+                    )
+                } else {
+                    CompactActionsRow(
+                        canUndo = gameBoard.canUndo,
+                        canRedo = gameBoard.canRedo,
+                        canInteract = canInteract,
+                        fillEnabled = account.fillQuotaRemaining > 0 && canInteract,
+                        fillQuota = account.fillQuotaRemaining,
+                        onUndo = onUndo,
+                        onRedo = onRedo,
+                        onReset = onReset,
+                        onHint = onHint,
+                        onCheck = onCheck,
+                        onFill = onFill,
+                        onShowAnswer = onShowAnswer,
+                    )
+                }
             }
         }
     }
@@ -758,6 +845,121 @@ private fun ActionPill(
 }
 
 /**
+ * 紧凑操作行:撤销 / 重做 / 重置 / 提示 / 检查 / 补齐 一行6个等分小胶囊。
+ * 竖屏底部把原"操作组 + 辅助组"两行压成一行,腾出空间给棋盘。
+ * 参考答案以一个小号文字链接形式放在该行下方(居中、占位极小)。
+ * 按钮高度固定 36dp,字号 11sp,图标+短文字,触摸目标靠宽度保证(6等分仍 ≥44dp)。
+ */
+@Composable
+private fun CompactActionsRow(
+    canUndo: Boolean,
+    canRedo: Boolean,
+    canInteract: Boolean,
+    fillEnabled: Boolean,
+    fillQuota: Int,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onReset: () -> Unit,
+    onHint: () -> Unit,
+    onCheck: () -> Unit,
+    onFill: () -> Unit,
+    onShowAnswer: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            CompactPill("↩ 撤销", canUndo, Modifier.weight(1f), onUndo)
+            CompactPill("↪ 重做", canRedo, Modifier.weight(1f), onRedo)
+            CompactPill("↺ 重置", true, Modifier.weight(1f), onReset)
+            CompactPill("💡 提示", canInteract, Modifier.weight(1f), onHint)
+            CompactPill("🔍 检查", canInteract, Modifier.weight(1f), onCheck)
+            // 补齐按钮为品牌强调色(显眼),配额为 0 时禁用
+            CompactPill(
+                text = "⚡ 补齐",
+                enabled = fillEnabled,
+                modifier = Modifier.weight(1f),
+                onClick = onFill,
+                highlight = true,
+            )
+        }
+        // 参考答案:小号文字链接,占位极小,不抢棋盘空间
+        TextButton(
+            onClick = onShowAnswer,
+            modifier = Modifier.height(28.dp),
+            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 0.dp),
+        ) {
+            Text(
+                "👁 参考答案",
+                fontSize = 10.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * 紧凑小胶囊按钮:固定 36dp 高、11sp 字号、圆角 14dp、半透明背景。
+ * 默认(primaryContainer);highlight=true 用品牌珊瑚色强调(补齐按钮)。
+ * 触摸目标由 width 等分保证(6 个一行在常见手机宽度下仍 ≥44dp)。
+ */
+@Composable
+private fun CompactPill(
+    text: String,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+    highlight: Boolean = false,
+) {
+    val bg = if (!enabled) {
+        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)
+    } else if (highlight) {
+        Coral.copy(alpha = 0.18f)
+    } else {
+        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+    }
+    val fg = if (!enabled) {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+    } else if (highlight) {
+        Coral
+    } else {
+        MaterialTheme.colorScheme.onPrimaryContainer
+    }
+    val border = if (highlight && enabled) {
+        BorderStroke(1.dp, Coral.copy(alpha = 0.5f))
+    } else {
+        BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f))
+    }
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        modifier = modifier.height(36.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = bg,
+        contentColor = fg,
+        border = border,
+    ) {
+        Box(
+            modifier = Modifier.fillMaxSize(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/**
  * 辅助组：检查错误 / 参考答案 / 一键补齐（额度制）。
  * 检查中时整行替换为"检查结果条"（清除错误格 / 收起）。
  */
@@ -997,6 +1199,40 @@ private fun WinOverlay(
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // 通关庆祝视频:res/raw/celebrate.mp4(不存在时不显示,不影响通关)
+                val ctx = LocalContext.current
+                val videoResId = remember { ctx.resources.getIdentifier("celebrate", "raw", ctx.packageName) }
+                if (videoResId != 0) {
+                    Text(
+                        "🎬 通关庆祝",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                    AndroidView(
+                        factory = { viewContext ->
+                            VideoView(viewContext).apply {
+                                setVideoURI(Uri.parse("android.resource://${ctx.packageName}/$videoResId"))
+                                setOnPreparedListener { mp ->
+                                    mp.isLooping = true
+                                    mp.setVolume(0.4f, 0.4f)
+                                    start()
+                                }
+                                layoutParams = android.view.ViewGroup.LayoutParams(
+                                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                                    android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
+                                )
+                            }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth(0.7f)
+                            .heightIn(max = 160.dp)
+                            .clip(RoundedCornerShape(12.dp)),
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
 
                 // 棋盘预览偏小时提供"放大查看"全屏模式（可缩放/平移），大棋盘也能看清图案
                 TextButton(onClick = { showZoomed = true }) {

@@ -23,10 +23,32 @@ object LocalSettings {
     var demoAllUnlocked by mutableStateOf(false)
         private set
 
+    /** 背景音乐开关(前台 Service 播放)。 */
+    var musicEnabled by mutableStateOf(false)
+        private set
+
+    /** 摇一摇重置棋盘开关(加速度传感器)。 */
+    var shakeToResetEnabled by mutableStateOf(true)
+        private set
+
     fun init(context: Context) {
         prefs = context.getSharedPreferences("xiangsu_settings", Context.MODE_PRIVATE)
         serverUrl = prefs.getString(KEY_SERVER, DEFAULT_SERVER_URL) ?: DEFAULT_SERVER_URL
         demoAllUnlocked = prefs.getBoolean(KEY_DEMO_UNLOCK, false)
+        musicEnabled = prefs.getBoolean(KEY_MUSIC, false)
+        shakeToResetEnabled = prefs.getBoolean(KEY_SHAKE, true)
+    }
+
+    fun saveMusicEnabled(enabled: Boolean) {
+        if (enabled == musicEnabled) return
+        musicEnabled = enabled
+        prefs.edit().putBoolean(KEY_MUSIC, enabled).apply()
+    }
+
+    fun saveShakeEnabled(enabled: Boolean) {
+        if (enabled == shakeToResetEnabled) return
+        shakeToResetEnabled = enabled
+        prefs.edit().putBoolean(KEY_SHAKE, enabled).apply()
     }
 
     fun saveServerUrl(url: String) {
@@ -50,4 +72,6 @@ object LocalSettings {
 
     private const val KEY_SERVER = "server_url"
     private const val KEY_DEMO_UNLOCK = "demo_all_unlocked"
+    private const val KEY_MUSIC = "music_enabled"
+    private const val KEY_SHAKE = "shake_to_reset"
 }

@@ -6,6 +6,7 @@ import com.example.xiangsugame.auth.AuthManager
 import com.example.xiangsugame.data.AccountStore
 import com.example.xiangsugame.data.LocalSettings
 import com.example.xiangsugame.data.PuzzleRepository
+import com.example.xiangsugame.service.SoundEffectManager
 
 /**
  * 轻量依赖容器:进程级单例初始化 + 账号级 Store 注册表。
@@ -21,6 +22,7 @@ object AppGraph {
         AuthManager.init(appContext!!)
         ApiClient.init(appContext!!)
         PuzzleRepository.init(appContext!!)
+        SoundEffectManager.init(appContext!!) // UI 音效(点击/通关/错误)
     }
 
     private val accounts = HashMap<Int, AccountStore>()

@@ -64,7 +64,7 @@ import kotlinx.coroutines.launch
  * 首页中枢 —— 深夜画室风,单张 LazyVerticalGrid 纵向滚动:
  *  - 渐变 Hero:标题 + 账号昵称 + 补齐额度 + 切换账号;
  *  - 登录用户:在线入口四宫格(每日一题/在线题库/排行榜/对战)+ 每日一题卡;
- *  - 游客:仅内置关卡,提示可去登录;
+ *  - 游客:仅内置关卡,提示可去邮箱登录;
  *  - 模式分段(自由/限时)+ 内置关卡网格(顺序解锁)。
  */
 @Composable
@@ -574,7 +574,7 @@ private fun GuestBanner(onLogin: () -> Unit) {
                 )
             }
             TextButton(onClick = onLogin) {
-                Text("去登录", fontWeight = FontWeight.Bold)
+                Text("邮箱登录", fontWeight = FontWeight.Bold)
             }
         }
     }

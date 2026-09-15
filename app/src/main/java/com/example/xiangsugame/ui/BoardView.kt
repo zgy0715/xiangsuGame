@@ -215,6 +215,8 @@ fun BoardView(
                                     var transforming = false
                                     var centroid = Offset.Zero
                                     var span = 0f
+                                    // 单指平移:放大后拖动同时涂色+平移视口
+                                    var lastDrag: Offset? = null
                                     while (true) {
                                         val event = awaitPointerEvent()
 
@@ -229,6 +231,7 @@ fun BoardView(
                                             }
                                             transforming = true
                                             lastScreen = null // 双指期间不画
+                                            lastDrag = null
                                             val a = pressed[0].position
                                             val b = pressed[1].position
                                             val newCentroid = Offset((a.x + b.x) / 2f, (a.y + b.y) / 2f)
@@ -261,7 +264,19 @@ fun BoardView(
                                             ) {
                                                 ch.consume()
                                             } else {
-                                                paintTo(ch.position)
+                                                // 放大后单指拖动:同时涂色 + 平移视口
+                                                val pos = ch.position
+                                                paintTo(pos)
+                                                if (viewScale > MinZoom + 0.01f) {
+                                                    val prev = lastDrag
+                                                    lastDrag = pos
+                                                    if (prev != null) {
+                                                        val pan = pos - prev
+                                                        viewOffset = clampViewOffset(
+                                                            viewOffset + pan, viewScale, viewSize,
+                                                        )
+                                                    }
+                                                }
                                                 ch.consume()
                                             }
                                         }

@@ -6,9 +6,14 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -16,18 +21,26 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.xiangsugame.api.ApiClient
 import com.example.xiangsugame.auth.AuthManager
+import com.example.xiangsugame.data.LocalSettings
 import com.example.xiangsugame.model.GameMode
 import com.example.xiangsugame.model.Level
 import com.example.xiangsugame.model.Levels
+import com.example.xiangsugame.receiver.NetworkMonitor
 import com.example.xiangsugame.ui.BattleHomeScreen
 import com.example.xiangsugame.ui.GameScreen
 import com.example.xiangsugame.ui.HallScreen
 import com.example.xiangsugame.ui.HomeScreen
 import com.example.xiangsugame.ui.LeaderboardScreen
 import com.example.xiangsugame.ui.LoginScreen
+import com.example.xiangsugame.ui.NicknameDialog
 import com.example.xiangsugame.ui.SettingsScreen
 import com.example.xiangsugame.ui.theme.XiangsuGameTheme
 import kotlinx.coroutines.launch
@@ -37,10 +50,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppGraph.init(applicationContext) // 单例容器:设置/会话/网络/仓库
+        NetworkMonitor.init(applicationContext) // 网络状态广播监听
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
+        // 背景音乐暂未实现(见 设置页「体验」说明),故这里不启动任何音频服务
         setContent {
             XiangsuGameTheme {
                 Surface(
@@ -51,6 +66,11 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        NetworkMonitor.release(applicationContext)
+        super.onDestroy()
     }
 }
 
@@ -88,65 +108,109 @@ fun XiangsuGameApp() {
         }
     }
 
-    when (val s = current) {
-        Screen.Login -> LoginScreen()
+    // —— 首次登录(邮箱注册)后引导设置昵称:进首页弹一次,可跳过 ——
+    var pendingNickname by remember { mutableStateOf(false) }
+    LaunchedEffect(logged) {
+        pendingNickname = logged && !AuthManager.isGuest && AuthManager.consumeNewUserFlag()
+    }
 
-        Screen.Main -> {
-            if (account != null) {
-                HomeScreen(
-                    levels = levels,
-                    account = account,
-                    onPlayLevel = { level, mode -> push(Screen.Game(level, mode)) },
-                    onPlayDaily = { level -> push(Screen.Game(level, GameMode.FREE)) },
-                    onOpenHall = { push(Screen.Hall) },
-                    onOpenLeaderboard = { push(Screen.Leaderboard) },
-                    onOpenBattle = { push(Screen.BattleHome) },
-                    onOpenSettings = { push(Screen.Settings) },
-                    onLogout = { AuthManager.logout() },
-                )
+    // 网络断网提示条(由 NetworkMonitor 广播驱动)
+    val offline = !NetworkMonitor.isConnected
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        when (val s = current) {
+            Screen.Login -> LoginScreen()
+
+            Screen.Main -> {
+                if (account != null) {
+                    HomeScreen(
+                        levels = levels,
+                        account = account,
+                        onPlayLevel = { level, mode -> push(Screen.Game(level, mode)) },
+                        onPlayDaily = { level -> push(Screen.Game(level, GameMode.FREE)) },
+                        onOpenHall = { push(Screen.Hall) },
+                        onOpenLeaderboard = { push(Screen.Leaderboard) },
+                        onOpenBattle = { push(Screen.BattleHome) },
+                        onOpenSettings = { push(Screen.Settings) },
+                        onLogout = { AuthManager.logout() },
+                    )
+                }
             }
-        }
 
-        Screen.Hall -> HallScreen(
-            onPlay = { level -> push(Screen.Game(level, GameMode.FREE)) },
-            onBack = pop,
-        )
+            Screen.Hall -> HallScreen(
+                onPlay = { level -> push(Screen.Game(level, GameMode.FREE)) },
+                onBack = pop,
+            )
 
-        Screen.Leaderboard -> LeaderboardScreen(onBack = pop)
+            Screen.Leaderboard -> LeaderboardScreen(onBack = pop)
 
-        Screen.BattleHome -> BattleHomeScreen(onBack = pop)
+            Screen.BattleHome -> BattleHomeScreen(onBack = pop)
 
-        Screen.Settings -> SettingsScreen(onBack = pop)
+            Screen.Settings -> SettingsScreen(onBack = pop)
 
-        is Screen.Game -> {
-            if (account != null) {
-                // 下一关仅对内置顺序关卡有意义(在线关 id 为负,无顺序链)
-                val index = levels.indexOfFirst { it.id == s.level.id }
-                val nextLevel = if (index in 0 until levels.lastIndex) levels[index + 1] else null
-                val online = s.level.id < 0
-                GameScreen(
-                    level = s.level,
-                    account = account,
-                    mode = s.mode,
-                    onBack = pop,
-                    onNextLevel = nextLevel?.let { next -> { push(Screen.Game(next, s.mode)) } },
-                    // 在线单人通关 → 上传成绩到排行榜(失败静默,离线可缓存后再玩)
-                    onSolved = if (online) { _, elapsed ->
-                        scope.launch {
-                            ApiClient.safe {
-                                ApiClient.api().submitRecord(
-                                    com.example.xiangsugame.api.dto.SubmitRecordRequest(
-                                        puzzleId = s.level.id,
-                                        durationMs = elapsed * 1000,
-                                        source = "single",
-                                    ),
-                                )
+            is Screen.Game -> {
+                if (account != null) {
+                    // 下一关仅对内置顺序关卡有意义(在线关 id 为负,无顺序链)
+                    val index = levels.indexOfFirst { it.id == s.level.id }
+                    val nextLevel = if (index in 0 until levels.lastIndex) levels[index + 1] else null
+                    val online = s.level.id < 0
+                    GameScreen(
+                        level = s.level,
+                        account = account,
+                        mode = s.mode,
+                        onBack = pop,
+                        onNextLevel = nextLevel?.let { next -> { push(Screen.Game(next, s.mode)) } },
+                        // 在线单人通关 → 上传成绩到排行榜(失败静默,离线可缓存后再玩)
+                        onSolved = if (online) { _, elapsed ->
+                            scope.launch {
+                                ApiClient.safe {
+                                    ApiClient.api().submitRecord(
+                                        com.example.xiangsugame.api.dto.SubmitRecordRequest(
+                                            puzzleId = s.level.id,
+                                            durationMs = elapsed * 1000,
+                                            source = "single",
+                                        ),
+                                    )
+                                }
                             }
-                        }
-                    } else null,
+                        } else null,
+                    )
+                }
+            }
+        }
+
+        // 断网提示:顶部常驻红条(可点击关闭),恢复网络后自动消失
+        if (offline) {
+            Surface(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .systemBarsPadding(),
+                color = Color(0xFFE53935),
+                contentColor = Color.White,
+            ) {
+                Text(
+                    "⚠ 网络已断开,在线功能暂不可用(内置关可离线玩)",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 6.dp, horizontal = 12.dp),
                 )
             }
         }
+    }
+
+    // 首次登录(服务端 isNew)后引导设置昵称;跳过则保留服务端默认昵称
+    if (pendingNickname) {
+        NicknameDialog(
+            current = AuthManager.session?.nickname.orEmpty(),
+            title = "设置昵称",
+            hint = "首次登录已自动注册账号,昵称会展示在排行榜与对战房间;现在跳过也可以,之后可在设置页修改",
+            onDismiss = {
+                pendingNickname = false
+                AuthManager.clearNicknameSetup()
+            },
+        )
     }
 }
 
