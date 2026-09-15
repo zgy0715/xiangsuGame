@@ -92,7 +92,7 @@ Fill-a-Pix(像素填空)是康思谜题(Conceptis Puzzles)旗下的经典逻辑�
 ├── scripts/                   # 启动脚本(双击即用)
 │   ├── start-server-smtp.bat  # 启动服务端(读 server/smtp.env 发信配置)
 │   └── start_server_smtp.ps1  #   其实现:读配置 + 授权码脱敏回显 + 起服务
-└── tools/                     # 内置关图案/提示工具链(改图案标准流程见下)
+└── tools/                     # 内置关工具链:gen_clues / verify_clues / gen_audio
 ```
 
 ### 核心算法
@@ -184,7 +184,7 @@ python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
 单测覆盖:全部关卡唯一解与答案一致、提示逐步推导收敛到答案、DTO↔JSON 契约、额度每日规则、邮箱登录规则(格式校验/验证码格式/重发倒计时)、对战帧协议(含重赛/NTP 校时)、会话状态机、蓝牙掩码校验与结算排序(50+ 用例);服务端冒烟覆盖邮箱验证码全链路(发码/限流/过期/错码上限/单次使用/老用户复用账号)、昵称持久化、房间发车/结算/重赛/断线重进/房主宽限回收。`pip install -r requirements.txt` 后 `cd server && python smoke_test.py` 即可验证。
 
-内置关图案工具链(`tools/`):改 `Levels.kt`(同步 `gen_clues.py` 图案副本)→ `python tools/verify_clues.py` → `gen_clues.py <关名>` → `update_clues.py` → `./gradlew testDebugUnitTest`。
+内置关图案工具链(`tools/`,只保留 3 个常驻脚本):改 `Levels.kt`(同步 `gen_clues.py` 图案副本)→ `python tools/verify_clues.py` 定位失效关 → `python tools/gen_clues.py <关名>` 重生成提示集并贴回 `SparseClues.kt` → `./gradlew testDebugUnitTest` 终审。
 
 ## 🚧 后续规划
 
