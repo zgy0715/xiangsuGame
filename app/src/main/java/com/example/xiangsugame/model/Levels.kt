@@ -16,7 +16,7 @@ package com.example.xiangsugame.model
  * 本版使用**稀疏提示**：只在一部分格子放数字，位置由"贪心去提示 + 唯一解校验"
  * 管线生成（见 PuzzleGenerator 注释），保证每个关卡仍然只有唯一解 ——
  * 谜面唯一解由 CoreLogicTest 校验。
- * 关卡 id 即"第几关"，顺序解锁由 GameProgress 管理（通关第 N 关解锁 N+1 关）。
+ * 关卡 id 即"第几关"，顺序解锁由 AccountStore 管理（通关第 N 关解锁 N+1 关）。
  */
 object Levels {
 
@@ -25,6 +25,13 @@ object Levels {
         heart(), smiley(), butterfly(), apple(), house(), fish(),
         star(), crown(), moon(), rocket(),
     )
+
+    /**
+     * 按 id 取内置关(找不到返回 null)。
+     * 用途:排行榜里"我打过的题"只返回 id,内置关的题名需在客户端本地补全 ——
+     * 内置关数据固化在 [Levels] 中,服务端 puzzles 表只有在线关(负 id)。
+     */
+    fun byId(id: Int): Level? = all.firstOrNull { it.id == id }
 
     /** 红心：10×10，第 1 关（简单）。两瓣圆润 + 中缝凹口 + 收尖底部。 */
     private fun heart() = Level.fromAnswer(
@@ -91,26 +98,26 @@ object Levels {
         timedLimitSeconds = 240,
     )
 
-    /** 苹果：14×14，第 4 关（中等）。细果柄 + 顶部凹槽 + 圆润果身 + 收底，一眼可辨。 */
+    /** 苹果：14×14，第 4 关（中等）。细果柄 + 圆润果身（顶部连贯无分叉）+ 收底尖，一眼可辨。 */
     private fun apple() = Level.fromAnswer(
         id = 4,
         name = "苹果",
         difficulty = Difficulty.MEDIUM,
         answer = art(
-            "......XX......",
-            "......XX......",
-            "......XX......",
-            ".....XXXX.....",
-            "...XXX..XXX...",
-            "..XXXXXXXXXX..",
-            ".XXXXXXXXXXXX.",
-            "XXXXXXXXXXXXXX",
-            "XXXXXXXXXXXXXX",
-            ".XXXXXXXXXXXX.",
-            "..XXXXXXXXXX..",
-            "...XXXXXXXX...",
-            "....XXXXXX....",
-            ".....XXXX.....",
+        "......XX......",   // 果柄
+        "......XX......",
+        "...XXXXXXXX...",   // 宽肩（苹果顶部不是尖的）
+        "..XXXXXXXXXX..",
+        ".XXXXXXXXXXXX.",
+        "XXXXXXXXXXXXXX",   // 最饱满处
+        "XXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXX",
+        ".XXXXXXXXXXXX.",   // 圆底收口
+        "..XXXXXXXXXX..",
+        "....XXXXXX....",
         ),
         cluePositions = SparseClues.apple,
         timedLimitSeconds = 300,
@@ -219,31 +226,31 @@ object Levels {
     // ———— 大尺寸关卡答案的"程序化作画" ————
 
     /**
-     * 星星 20×20：实心五角星（手写逐格，完全左右对称）。
-     * 五条角：顶端尖角 + 左右两臂（臂间留 V 形凹口）+ 下方两脚，
-     * 比"多边形超采样"出来的胖块清晰得多，一眼可辨。
+     * 星星 20×20：标准实心五角星（手写逐格，完全左右对称）。
+     * 顶尖向上 → 上臂水平横伸（占 1 行全宽）→ 凹口向内向下收 → 下方汇合 →
+     * 两个下脚向斜下分叉收尖，五个角清晰可辨。
      */
     private fun star20(): Array<IntArray> = art(
-        "....................",
-        ".........XX.........",
-        "........XXXX........",
-        "........XXXX........",
-        ".......XXXXXX.......",
-        "......XXXXXXXX......",
-        ".....XXXXXXXXXX.....",
-        "..XXXXXXX..XXXXXXX..",
-        "..XXXXXXX..XXXXXXX..",
-        "..XXXXXXX..XXXXXXX..",
-        "...XXXXXX..XXXXXX...",
-        "....XXXXX..XXXXX....",
-        "....XXXX....XXXX....",
-        "....XXXXXXXXXXXX....",
-        ".....XXXXXXXXXX.....",
-        ".....XXX....XXX.....",
-        "......XX....XX......",
-        "......XX....XX......",
-        ".......XX..XX.......",
-        "....................",
+    "....................",
+    ".........XX.........",
+    ".........XX.........",
+    "........XXXX........",
+    "........XXXX........",
+    ".......XXXXXX.......",
+    ".......XXXXXX.......",
+    "XXXXXXXXXXXXXXXXXXXX",   // 臂展最宽
+    "XXXXXXXXXXXXXXXXXXXX",
+    ".XXXXXXXXXXXXXXXXXX.",
+    "..XXXXXXXXXXXXXXXX..",
+    "...XXXXXXXXXXXXXX...",
+    "....XXXXXXXXXXXX....",   // 这里是内凹顶点所在，仍然实心
+    "....XXXX....XXXX....",   // 开始分叉
+    "....XXX......XXX....",
+    "....XX........XX....",
+    "....XX........XX....",
+    "....X..........X....",   // 腿尖
+    "....................",
+    "....................",
     )
 
     /**

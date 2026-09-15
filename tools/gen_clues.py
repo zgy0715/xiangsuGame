@@ -46,7 +46,7 @@ def butterfly():
 def apple():
     return art(
         "......XX......", "......XX......", "......XX......", ".....XXXX.....",
-        "...XXX..XXX...", "..XXXXXXXXXX..", ".XXXXXXXXXXXX.", "XXXXXXXXXXXXXX",
+        "...XXXXXXXX...", "..XXXXXXXXXX..", ".XXXXXXXXXXXX.", "XXXXXXXXXXXXXX",
         "XXXXXXXXXXXXXX", ".XXXXXXXXXXXX.", "..XXXXXXXXXX..", "...XXXXXXXX...",
         "....XXXXXX....", ".....XXXX.....")
 
@@ -67,12 +67,12 @@ def fish():
 def star():
     return art(
         "....................", ".........XX.........", "........XXXX........",
-        "........XXXX........", ".......XXXXXX.......", "......XXXXXXXX......",
-        ".....XXXXXXXXXX.....", "..XXXXXXX..XXXXXXX..", "..XXXXXXX..XXXXXXX..",
-        "..XXXXXXX..XXXXXXX..", "...XXXXXX..XXXXXX...", "....XXXXX..XXXXX....",
-        "....XXXX....XXXX....", "....XXXXXXXXXXXX....", ".....XXXXXXXXXX.....",
-        ".....XXX....XXX.....", "......XX....XX......", "......XX....XX......",
-        ".......XX..XX.......", "....................")
+        ".......XXXXXX.......", "......XXXXXXXX......", ".....XXXXXXXXXX.....",
+        "....XXXXXXXXXXXX....", "XXXXXXXXXXXXXXXXXXXX", "XXXX..XXXXXXXX..XXXX",
+        "XX.....XXXXXX.....XX", "XX......XXXX......XX", "XX.....XXXXXX.....XX",
+        "..XXXXXXXXXXXXXXXX..", "...XXXX......XXXX...", "....XXX......XXX....",
+        ".....XX......XX.....", ".....XX......XX.....", "......X......X......",
+        "....................", "....................")
 
 def crown():
     return art(

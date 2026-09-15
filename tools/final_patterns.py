@@ -128,7 +128,7 @@ show("4 苹果", art(
     "......XX......",
     "......XX......",
     ".....XXXX.....",
-    "...XXX..XXX...",
+    "...XXXXXXXX...",
     "..XXXXXXXXXX..",
     ".XXXXXXXXXXXX.",
     "XXXXXXXXXXXXXX",
@@ -180,31 +180,31 @@ show("6 小鱼", art(
     "................",
 ))
 
-# ---------- 7 STAR (hand-drawn 5-point, symmetric) ----------
+# ---------- 7 STAR (standard 5-point, symmetric) ----------
 def solid_star():
     return art(
         "....................",
         ".........XX.........",
         "........XXXX........",
-        "........XXXX........",
         ".......XXXXXX.......",
         "......XXXXXXXX......",
         ".....XXXXXXXXXX.....",
-        "..XXXXXXX..XXXXXXX..",
-        "..XXXXXXX..XXXXXXX..",
-        "..XXXXXXX..XXXXXXX..",
-        "...XXXXXX..XXXXXX...",
-        "....XXXXX..XXXXX....",
-        "....XXXX....XXXX....",
         "....XXXXXXXXXXXX....",
-        ".....XXXXXXXXXX.....",
-        ".....XXX....XXX.....",
-        "......XX....XX......",
-        "......XX....XX......",
-        ".......XX..XX.......",
+        "XXXXXXXXXXXXXXXXXXXX",
+        "XXXX..XXXXXXXX..XXXX",
+        "XX.....XXXXXX.....XX",
+        "XX......XXXX......XX",
+        "XX.....XXXXXX.....XX",
+        "..XXXXXXXXXXXXXXXX..",
+        "...XXXX......XXXX...",
+        "....XXX......XXX....",
+        ".....XX......XX.....",
+        ".....XX......XX.....",
+        "......X......X......",
+        "....................",
         "....................",
     )
-show("7 星星(手写五角星)", solid_star())
+show("7 星星(标准五角星)", solid_star())
 
 # ---------- 8 CROWN (unchanged) ----------
 def crown():
