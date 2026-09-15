@@ -631,7 +631,6 @@ private fun BtRaceView(
                     mode = GameMode.FREE,
                     onBack = onExit,
                     showOverlays = false,
-                    externalPaused = session.pausedForMe,
                     onSolved = { board, elapsed -> session.localFinish(board, elapsed) },
                     onProgress = { filled, elapsed -> session.reportProgress(filled, elapsed) },
                     modifier = Modifier.weight(1f),
@@ -639,25 +638,35 @@ private fun BtRaceView(
             }
         }
 
-        if (session.pausedForMe && session.phase == BattlePhase.RACING) {
-            Box(
+        // 「对方完成」提示 —— 非阻断:对方名次已定,我继续做完自己的盘面,
+        // 双端都完成后由对称校验给出最终排名(不再强制退出本局)。
+        if (session.someoneFinished) {
+            val first = session.finishedPlayers.first()
+            Surface(
                 modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0x66000000)),
-                contentAlignment = Alignment.Center,
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 4.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = Amber.copy(alpha = 0.16f),
+                border = BorderStroke(1.dp, Amber.copy(alpha = 0.5f)),
             ) {
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, Amber.copy(alpha = 0.5f)),
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Column(modifier = Modifier.padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text("🏁", fontSize = 36.sp)
-                        Text("对方已完成!", fontSize = 19.sp, fontWeight = FontWeight.Black, color = Ink)
-                        Text("本局继续由对方胜出,回大厅再来一局", fontSize = 12.sp, color = Cocoa,
-                            modifier = Modifier.padding(top = 4.dp))
-                        Spacer(modifier = Modifier.height(12.dp))
-                        OutlinedButton(onClick = onExit) { Text("返回对战大厅") }
+                    Text("🏁", fontSize = 14.sp)
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        when {
+                            session.mySubmitted -> "你已完成,等对方做完"
+                            else -> "${first.nickname} 第${first.finishedRank}名完成 · 你继续加油!"
+                        },
+                        fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Ink,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (session.racingCount > 0) {
+                        Text("还剩 ${session.racingCount} 人", fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold, color = Cocoa)
                     }
                 }
             }

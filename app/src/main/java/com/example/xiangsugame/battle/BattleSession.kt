@@ -92,10 +92,28 @@ class BattleSession(
     var fatal by mutableStateOf<String?>(null)
         private set
 
-    /** 对方先完成导致我被冻结(仅未完成方可见)。 */
-    val pausedForMe: Boolean
-        get() = phase == BattlePhase.RACING && !mySubmitted &&
-            players.any { it.finishedRank > 0 }
+    /**
+     * 本局已完成(拿到名次)的玩家,按名次升序 —— 用于竞速中把"第几名是谁"实时展示给
+     * 还在做的人(非阻断,不影响继续操作)。
+     */
+    val finishedPlayers: List<BattleProtocol.RacePlayer>
+        get() = players.filter { it.finishedRank > 0 }.sortedBy { it.finishedRank }
+
+    /** 是否已经有人完成(仍在竞速中) —— 驱动"有人完成"提示横幅,不冻结棋盘。 */
+    val someoneFinished: Boolean
+        get() = phase == BattlePhase.RACING && players.any { it.finishedRank > 0 }
+
+    /**
+     * 我已经提交、但服务器尚未宣布结算:此时继续保持棋盘可见,等其他人陆续完成。
+     * 期间计时器仍在走,名次已由服务器记录,不影响最终结算。
+     */
+    val awaitingMyResult: Boolean
+        get() = phase == BattlePhase.RACING && mySubmitted &&
+            players.any { it.finishedRank == 0 && it.connected }
+
+    /** 竞速中还没完成的玩家(用于横幅提示"还有 N 人在做")。 */
+    val racingCount: Int
+        get() = players.count { it.connected && it.finishedRank == 0 }
 
     val isHost: Boolean get() = role == BattleRole.HOST
     val me: BattleProtocol.RacePlayer?

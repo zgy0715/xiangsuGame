@@ -53,7 +53,7 @@ class BattleSessionTest {
         assertEquals(BattlePhase.LOBBY, s.phase)
         assertEquals(2, s.players.size)
         assertEquals(3, s.hostId)
-        assertFalse(s.pausedForMe)
+        assertFalse(s.someoneFinished)
     }
 
     @Test
@@ -91,10 +91,14 @@ class BattleSessionTest {
             BattleProtocol.ProgressPayload(userId = opp, filled = 3, elapsedMs = 4000L)))
         assertEquals(3, s.players.first { it.userId == opp }.filled)
 
-        // 对手先完成 → 我(未提交)被冻结
+        // 对手先完成 → 我不再被冻结,继续做自己的盘面;名次实时可见
         t.push(BattleProtocol.encode(BattleProtocol.DOWN_FINISHED,
             BattleProtocol.FinishPayload(userId = opp, rank = 1, durationMs = 4000L)))
-        assertTrue(s.pausedForMe)
+        assertTrue(s.someoneFinished)
+        assertFalse(s.awaitingMyResult) // 我还没提交
+        assertEquals(1, s.finishedPlayers.size)
+        assertEquals(opp, s.finishedPlayers.first().userId)
+        assertEquals(1, s.racingCount) // 还有 1 人(我)在做
 
         // 我完成并提交
         s.localFinish(arrayOf(intArrayOf(1, 1), intArrayOf(1, 1)), elapsedSeconds = 8)
@@ -112,12 +116,70 @@ class BattleSessionTest {
         assertEquals(BattlePhase.SETTLED, s.phase)
         assertEquals(2, s.myFinalRank)
         assertEquals(2, s.resultEntries.size)
-        assertFalse(s.pausedForMe) // 结算后不再"冻结"遮罩
+        assertFalse(s.someoneFinished)   // 结算后不再显示"有人完成"横幅
+        assertFalse(s.awaitingMyResult)
+    }
+
+    /**
+     * 关键回归:多人对局中"第一个人完成"不等于"本局结束"。
+     * 先完成者的名次对所有人可见,其余人**不被冻结**,可以继续做完,
+     * 直到服务器在全员完成后下发 result 才进入结算。
+     */
+    @Test
+    fun `first finisher in multiplayer does not freeze the others`() {
+        val t = FakeTransport()
+        val s = BattleSession(t, BattleRole.GUEST, myUserId = meId)
+        s.open()
+        val p1 = 11
+        val p2 = 12
+        t.push(BattleProtocol.encode(BattleProtocol.DOWN_ROOM_STATE,
+            BattleProtocol.RoomStatePayload(
+                roomId = "R4", hostId = p1, phase = "racing",
+                players = listOf(
+                    BattleProtocol.RacePlayer(p1, "甲"),
+                    BattleProtocol.RacePlayer(p2, "乙"),
+                    BattleProtocol.RacePlayer(meId, "我"),
+                ),
+            )))
+        t.push(BattleProtocol.encode(BattleProtocol.DOWN_RACE_START,
+            BattleProtocol.RaceStartPayload(serverStartMs = 0L, level = levelDto())))
+        assertEquals(3, s.racingCount)
+
+        // 甲先完成 → 名次播报,我仍可继续(不冻结、不退出)
+        t.push(BattleProtocol.encode(BattleProtocol.DOWN_FINISHED,
+            BattleProtocol.FinishPayload(userId = p1, rank = 1, durationMs = 3000L)))
+        assertTrue(s.someoneFinished)
+        assertEquals(1, s.finishedPlayers.first().finishedRank)
+        assertEquals("甲", s.finishedPlayers.first().nickname)
+        assertEquals(2, s.racingCount)          // 乙 和我都还在做
+        assertEquals(BattlePhase.RACING, s.phase) // 仍是竞速阶段,没有提前结算
+
+        // 我也完成 → 服务器还没结算,应保持棋盘可见等待剩余玩家
+        s.localFinish(arrayOf(intArrayOf(1, 1), intArrayOf(1, 1)), elapsedSeconds = 5)
+        t.push(BattleProtocol.encode(BattleProtocol.DOWN_FINISHED,
+            BattleProtocol.FinishPayload(userId = meId, rank = 2, durationMs = 5000L)))
+        assertEquals(BattlePhase.RACING, s.phase)
+        assertTrue(s.awaitingMyResult)  // 已完成但乙还在做
+        assertEquals(1, s.racingCount)
+
+        // 乙最后完成 → 服务器下发权威排行榜(含每人的用时)
+        t.push(BattleProtocol.encode(BattleProtocol.DOWN_RESULT, BattleProtocol.ResultPayload(
+            entries = listOf(
+                BattleProtocol.ResultEntry(p1, "甲", 1, 3000L),
+                BattleProtocol.ResultEntry(meId, "我", 2, 5000L),
+                BattleProtocol.ResultEntry(p2, "乙", 3, 9500L),
+            ),
+        )))
+        assertEquals(BattlePhase.SETTLED, s.phase)
+        assertEquals(3, s.resultEntries.size)
+        assertEquals(listOf(1, 2, 3), s.resultEntries.map { it.rank })
+        assertEquals(9500L, s.resultEntries.last().durationMs)
+        assertFalse(s.someoneFinished)
+        assertFalse(s.awaitingMyResult)
     }
 
     @Test
-    fun `duplicate localFinish sends only once`() {
-        val t = FakeTransport()
+    fun `duplicate localFinish sends only once`() {        val t = FakeTransport()
         val s = BattleSession(t, BattleRole.HOST, myUserId = meId)
         s.open()
         t.push(BattleProtocol.encode(BattleProtocol.DOWN_RACE_START,

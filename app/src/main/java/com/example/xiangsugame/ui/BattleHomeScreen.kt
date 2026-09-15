@@ -122,7 +122,6 @@ fun BattleHomeScreen(
             BattleView.MENU -> BattleMenu(
                 onBack = onBack,
                 onNetwork = { view = BattleView.NETWORK_SETUP },
-                onBluetooth = { view = BattleView.BLUETOOTH },
             )
 
             BattleView.NETWORK_SETUP -> NetworkSetup(
@@ -164,7 +163,7 @@ fun BattleHomeScreen(
 // ---------------- 入口菜单 ----------------
 
 @Composable
-private fun BattleMenu(onBack: () -> Unit, onNetwork: () -> Unit, onBluetooth: () -> Unit) {
+private fun BattleMenu(onBack: () -> Unit, onNetwork: () -> Unit) {
     ScreenTopBar(title = "对战大厅", subtitle = "同题竞速 · 先完成全对者胜", onBack = onBack)
     Column(
         modifier = Modifier
@@ -183,9 +182,33 @@ private fun BattleMenu(onBack: () -> Unit, onNetwork: () -> Unit, onBluetooth: (
         )
         Spacer(modifier = Modifier.height(12.dp))
         EntryCard(
-            emoji = "📶", title = "蓝牙对战", subtitle = "双机近场直连,无需网络",
-            accent = Cyan, actionText = "进入 ▶", onClick = onBluetooth,
+            emoji = "📶", title = "蓝牙对战", subtitle = "双机近场直连 · 需两台真机",
+            accent = Cyan, actionText = "需真机", onClick = null,
         )
+        Spacer(modifier = Modifier.height(12.dp))
+        // 说明为什么蓝牙在这里进不去:模拟器没有真实蓝牙硬件,RFCOMM 无法建连
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp)),
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Text(
+                    "ℹ️ 蓝牙对战为什么点不了?",
+                    fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink,
+                )
+                Text(
+                    "蓝牙对战走 Classic RFCOMM 直连,必须有两台带真实蓝牙硬件的手机。\n" +
+                        "模拟器(雷电 / Android Studio AVD)没有蓝牙适配器,拿不到 BluetoothAdapter,起不了监听套接字," +
+                        "因此无法建连 —— 这是模拟器的限制,不是功能缺失。\n" +
+                        "演示蓝牙请用两台真机近场配对;模拟器上请用「网络对战」(同一台服务器即可)。",
+                    fontSize = 11.sp, color = Cocoa, lineHeight = 17.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+        }
         Spacer(modifier = Modifier.height(14.dp))
         Text(
             "提示:参与网络对战的所有设备需连到同一台服务器\n" +
@@ -693,6 +716,13 @@ private fun RaceView(
             nowMs = session.serverNowMs()
         }
     }
+    // 非房主点「返回房间」时关掉结算卡,留在房间页等房主重赛;
+    // phase 切回 lobby(房主发 rematch 触发)或切到 RACING(新一局)时自动重置
+    var settleDismissed by remember { mutableStateOf(false) }
+    LaunchedEffect(session.phase) {
+        // 进入新阶段(lobby/racing/settled)时清掉"已关结算卡"标记,避免下一局结算卡不显示
+        settleDismissed = false
+    }
     val raceElapsedMs = if (session.serverStartMs > 0) {
         (nowMs - session.serverStartMs).coerceAtLeast(0L)
     } else 0L
@@ -743,6 +773,50 @@ private fun RaceView(
                     PlayerRaceRow(p, totalFilled)
                 }
             }
+            // 「有人完成」提示 —— 非阻断:先完成者的名次实时播报,剩下的人继续做同一道题;
+            // 全员完成后由服务器下发权威排行榜(见 BattleSession.finishedPlayers)。
+            if (session.someoneFinished) {
+                val first = session.finishedPlayers.first()
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    color = Amber.copy(alpha = 0.16f),
+                    border = BorderStroke(1.dp, Amber.copy(alpha = 0.5f)),
+                ) {
+                    Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("🏁", fontSize = 14.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                when {
+                                    session.mySubmitted -> "你已完成,等其他人做完"
+                                    else -> "${first.nickname} 第${first.finishedRank}名完成 · 你继续加油!"
+                                },
+                                fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Ink,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (session.racingCount > 0) {
+                                Text(
+                                    "还剩 ${session.racingCount} 人",
+                                    fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Cocoa,
+                                )
+                            }
+                        }
+                        if (session.finishedPlayers.size > 1) {
+                            Text(
+                                session.finishedPlayers.joinToString(" · ") {
+                                    "${it.nickname} 第${it.finishedRank}名"
+                                },
+                                fontSize = 10.sp, color = Cocoa,
+                                maxLines = 2,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
+                }
+            }
             if (account != null) {
                 GameScreen(
                     level = level,
@@ -750,7 +824,6 @@ private fun RaceView(
                     mode = GameMode.FREE,
                     onBack = onExit,
                     showOverlays = false,
-                    externalPaused = session.pausedForMe,
                     onSolved = { board, elapsed -> session.localFinish(board, elapsed) },
                     onProgress = { filled, elapsed -> session.reportProgress(filled, elapsed) },
                     modifier = Modifier.weight(1f),
@@ -758,41 +831,8 @@ private fun RaceView(
             }
         }
 
-        // 冻结:对方先完成而我还未完成
-        if (session.pausedForMe && session.phase == BattlePhase.RACING) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color(0x66000000)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Card(
-                    shape = RoundedCornerShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                    border = BorderStroke(1.dp, Amber.copy(alpha = 0.5f)),
-                ) {
-                    Column(
-                        modifier = Modifier.padding(22.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Text("🏁", fontSize = 36.sp)
-                        Text("本局已有人完成", fontSize = 20.sp, fontWeight = FontWeight.Black, color = Ink)
-                        Text(
-                            session.players.firstOrNull { it.finishedRank > 0 }
-                                ?.let { "${it.nickname} 第 ${it.finishedRank} 名" } ?: "",
-                            fontSize = 13.sp, color = Cocoa,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(top = 6.dp),
-                        )
-                        Spacer(modifier = Modifier.height(14.dp))
-                        OutlinedButton(onClick = onExit) { Text("退出本局") }
-                    }
-                }
-            }
-        }
-
-        // 结算
-        if (session.phase == BattlePhase.SETTLED && session.resultEntries.isNotEmpty()) {
+        // 结算(非房主点「返回房间」后会隐藏结算卡,留在房间页等房主重赛)
+        if (session.phase == BattlePhase.SETTLED && session.resultEntries.isNotEmpty() && !settleDismissed) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -847,24 +887,127 @@ private fun RaceView(
                             }
                         }
                         Spacer(modifier = Modifier.height(12.dp))
+                        // 「返回房间」+「返回大厅」两个选项:
+                        //   - 房主点返回房间 → 发 rematch,服务端把 phase 切回 lobby,全员回到房间待机页(保留房号与原房间)
+                        //   - 非房主点返回房间 → 关掉结算卡,留在房间页等服务端广播 phase=lobby(房主点重赛后自动切)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            // 返回房间:保留原房号与房间,等房主重新选题发车
+                            OutlinedButton(
+                                onClick = {
+                                    if (session.isHost) session.requestRematch()
+                                    settleDismissed = true
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) { Text("返回房间", fontWeight = FontWeight.Bold) }
+                            // 返回大厅:断开 transport,需重新建房/加房
+                            GradientButton(
+                                text = "返回大厅",
+                                onClick = onExit,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                        // 提示成绩去向:名次与用时已由服务器入库,可在排行榜「对战榜」里查(需把题目切到本题)
+                        Text(
+                            "本局成绩已入榜 · 到排行榜「对战榜」把题目切到「${level.name}」即可查看",
+                            fontSize = 10.sp, color = Cocoa, textAlign = TextAlign.Center,
+                            lineHeight = 15.sp,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 8.dp),
+                        )
+                        if (!session.isHost) {
+                            Text(
+                                "返回房间后,需等房主重新选题发车",
+                                fontSize = 10.sp, color = Cocoa, textAlign = TextAlign.Center,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 4.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 已在房间等下一局(点了「返回房间」之后):给明确状态 + 房号,避免停在一张冻结的棋盘上干等。
+        // 连接一直保持,房主 rematch 广播 phase=lobby 后本页自动切回房间待机页。
+        if (session.phase == BattlePhase.SETTLED && settleDismissed) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xCC000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(0.86f),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    border = BorderStroke(1.dp, Cyan.copy(alpha = 0.4f)),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(20.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text("🛋️", fontSize = 34.sp)
+                        Text("已在房间等待下一局", fontSize = 18.sp, fontWeight = FontWeight.Black, color = Ink)
+                        Text(
+                            session.puzzleName?.let { "上一局题目:${it}" } ?: "本局题目:${level.name}",
+                            fontSize = 11.sp, color = Cocoa,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
                         if (session.isHost) {
+                            Text(
+                                "你是房主 · 房号 ${session.roomTag}",
+                                fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Coral,
+                                modifier = Modifier.padding(top = 10.dp),
+                            )
+                            Text(
+                                "点下面按钮回到房间待机页,重新选题即可再来一局(房号不变)",
+                                fontSize = 11.sp, color = Cocoa,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(top = 4.dp),
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
                             Button(
                                 onClick = { session.requestRematch() },
                                 colors = ButtonDefaults.buttonColors(containerColor = Coral),
                                 modifier = Modifier.fillMaxWidth(),
-                            ) { Text("🔁 再来一局", fontWeight = FontWeight.Bold) }
-                            Spacer(modifier = Modifier.height(8.dp))
+                            ) { Text("↩ 回到房间待机页", fontWeight = FontWeight.Bold) }
                         } else {
                             Text(
-                                "等待房主发起「再来一局」…",
-                                fontSize = 12.sp, color = Cocoa, textAlign = TextAlign.Center,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 4.dp),
+                                "房号 ${session.roomTag} · 席位已保留",
+                                fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Cyan,
+                                modifier = Modifier.padding(top = 10.dp),
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(top = 8.dp),
+                            ) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                                Text(
+                                    " 等房主重新选题发车…",
+                                    fontSize = 12.sp, color = Cocoa,
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
                         }
-                        GradientButton(text = "返回大厅", onClick = onExit, modifier = Modifier.fillMaxWidth())
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            OutlinedButton(
+                                onClick = { settleDismissed = false },
+                                modifier = Modifier.weight(1f),
+                            ) { Text("查看结算", fontSize = 13.sp) }
+                            OutlinedButton(
+                                onClick = onExit,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("返回大厅", fontSize = 13.sp) }
+                        }
                     }
                 }
             }
