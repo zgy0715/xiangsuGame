@@ -32,11 +32,17 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.XiangsuGame">
+        <!--
+            configChanges:游戏页的棋盘、计时、撤销栈、页面栈、对战会话全都活在组合内存里,
+            旋转/分屏/改字号一旦触发 Activity 重建就会全部丢失(表现为"回到登录页"或"对局消失")。
+            这里自己处理配置变更;Compose 会通过 LocalConfiguration 感知尺寸变化并重新布局。
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.XiangsuGame"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|uiMode|density|fontScale"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

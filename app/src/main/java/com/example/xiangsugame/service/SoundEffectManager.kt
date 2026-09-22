@@ -9,7 +9,7 @@ import com.example.xiangsugame.data.LocalSettings
  * UI 音效管理器 —— 用 SoundPool 播放短促音效(点击/通关/错误)。
  *
  * 比 MediaPlayer 更低延迟,适合按钮点击即时反馈。
- * 音效开关跟随 [LocalSettings.musicEnabled](与音乐共用总开关)。
+ * 开关是独立的 [LocalSettings.soundEffectsEnabled](背景音乐见 [BackgroundMusicManager])。
  *
  * 用法:
  * ```
@@ -52,19 +52,19 @@ object SoundEffectManager {
 
     /** 按钮点击音效:短促清脆。 */
     fun click() {
-        if (!LocalSettings.musicEnabled) return
+        if (!LocalSettings.soundEffectsEnabled) return
         if (clickId != 0) soundPool?.play(clickId, 0.3f, 0.3f, 1, 0, 1f)
     }
 
     /** 通关音效:上升琶音。 */
     fun win() {
-        if (!LocalSettings.musicEnabled) return
+        if (!LocalSettings.soundEffectsEnabled) return
         if (winId != 0) soundPool?.play(winId, 0.5f, 0.5f, 2, 0, 1f)
     }
 
     /** 错误音效:低沉提示。 */
     fun error() {
-        if (!LocalSettings.musicEnabled) return
+        if (!LocalSettings.soundEffectsEnabled) return
         if (errorId != 0) soundPool?.play(errorId, 0.4f, 0.4f, 1, 0, 1f)
     }
 

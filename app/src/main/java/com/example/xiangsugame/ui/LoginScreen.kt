@@ -68,12 +68,16 @@ private enum class LoginStep { EMAIL, CODE }
 /**
  * 登录页 —— 邮箱 + 6 位验证码两步式:
  *   ① 输入邮箱 → 请求发码(服务端 SMTP 发信,未配置则打印在服务端控制台)
- *   ② 填入 6 位码 → 校验通过即签发 token → 根导航自动进首页
+ *   ② 填入 6 位码 → 校验通过即签发 token → 调 [onEnter] 进首页
  * 连不上服务器时可直接「游客进入」离线玩内置关。
+ *
+ * 启动固定停在本页:即使本地有续登会话也不自动进游戏,而是在顶部给一张
+ * 「一键继续」卡片(点它才校验并进入),这样登录流程每次启动都能被看到。
  */
 @Composable
 fun LoginScreen(
     modifier: Modifier = Modifier,
+    onEnter: () -> Unit = {},
 ) {
     var step by remember { mutableStateOf(LoginStep.EMAIL) }
     var email by remember { mutableStateOf(AuthManager.lastEmail) }
@@ -132,7 +136,7 @@ fun LoginScreen(
         error = null
         scope.launch {
             AuthManager.loginWithEmailCode(email, code)
-                .onSuccess { SoundEffectManager.win() }
+                .onSuccess { SoundEffectManager.win(); onEnter() }
                 .onFailure { error = it.message ?: "登录失败,请重试" }
             busy = false
         }
@@ -199,6 +203,36 @@ fun LoginScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(modifier = Modifier.height(26.dp))
+
+            // —— 上次登录的会话:启动固定停在登录页,这里给一次「一键继续」 ——
+            val restored = AuthManager.session
+            if (restored != null) {
+                ContinueCard(
+                    title = if (AuthManager.isGuest) "游客(离线)" else restored.nickname,
+                    subtitle = if (AuthManager.isGuest) {
+                        "上次以游客身份进入 · 仅内置关"
+                    } else {
+                        "上次登录:${AuthManager.lastEmail.ifBlank { "已登录账号" }}"
+                    },
+                    busy = busy,
+                    onContinue = {
+                        if (!busy) {
+                            SoundEffectManager.click()
+                            busy = true
+                            error = null
+                            scope.launch {
+                                if (AuthManager.verifyRestoredSession()) {
+                                    onEnter()
+                                } else {
+                                    error = "登录状态已失效,请重新用邮箱登录"
+                                }
+                                busy = false
+                            }
+                        }
+                    },
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+            }
 
             when (step) {
                 LoginStep.EMAIL -> {
@@ -379,7 +413,11 @@ fun LoginScreen(
                     .height(50.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .border(1.dp, Color(0x40FFFFFF), RoundedCornerShape(16.dp))
-                    .clickable(enabled = !busy, onClick = { SoundEffectManager.click(); AuthManager.enterGuest() }),
+                    .clickable(enabled = !busy, onClick = {
+                        SoundEffectManager.click()
+                        AuthManager.enterGuest()
+                        onEnter()
+                    }),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.Center,
             ) {
@@ -413,13 +451,67 @@ fun LoginScreen(
     }
 }
 
-/** 主操作按钮(品牌渐变,忙碌时显示进度)。 */
+/**
+ * 「一键继续」卡片:本地存在上次登录的会话时显示。
+ *
+ * 之所以要这张卡:启动固定停在登录页,续登不再自动发生,由用户点这里确认;
+ * 点击时会先向服务端校验令牌是否仍有效([AuthManager.verifyRestoredSession])。
+ */
+@Composable
+private fun ContinueCard(
+    title: String,
+    subtitle: String,
+    busy: Boolean,
+    onContinue: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color(0x1FFFFFFF))
+            .border(1.dp, Color(0x33FFFFFF), RoundedCornerShape(16.dp))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "继续上次登录",
+                fontSize = 11.sp,
+                color = Cocoa,
+            )
+            Text(
+                title,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.Bold,
+                color = Ink,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+            Text(
+                subtitle,
+                fontSize = 11.sp,
+                color = Cocoa,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        PrimaryButton(
+            text = if (busy) "校验中…" else "继续 ▶",
+            enabled = !busy,
+            busy = busy,
+            onClick = onContinue,
+            modifier = Modifier.width(118.dp),
+        )
+    }
+}
+
+/** 主操作按钮(品牌渐变,忙碌时显示进度;[modifier] 默认占满整行,卡片里可传固定宽度)。 */
 @Composable
 private fun PrimaryButton(
     text: String,
     enabled: Boolean,
     busy: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier.fillMaxWidth(),
 ) {
     val brush = if (enabled) {
         Brush.horizontalGradient(listOf(Color(0xFF7A68F2), Color(0xFF5647C9)))
@@ -427,8 +519,7 @@ private fun PrimaryButton(
         Brush.horizontalGradient(listOf(Color(0xFF4A4470), Color(0xFF3B3659)))
     }
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .height(52.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(brush)

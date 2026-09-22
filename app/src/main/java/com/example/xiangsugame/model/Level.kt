@@ -36,7 +36,10 @@ data class Level(
     init {
         require(rows > 0 && cols > 0) { "棋盘尺寸必须大于 0" }
         require(clueGrid.size == rows && answerGrid.size == rows) { "提示布局行数不匹配" }
-        require(clueGrid[0].size == cols && answerGrid[0].size == cols) { "列数不匹配" }
+        // 逐行校验:只查第 0 行会放过"锯齿矩阵"(某一行短一格),
+        // 之后会以数组越界的形式崩在游戏页的求解/答案比对上。
+        require(clueGrid.all { it.size == cols }) { "提示布局存在列数不一致的行" }
+        require(answerGrid.all { it.size == cols }) { "答案矩阵存在列数不一致的行" }
     }
 
     companion object {

@@ -19,21 +19,25 @@ object LevelCache {
 
     private val json: Json get() = SharedJson
 
-    private lateinit var prefs: android.content.SharedPreferences
+    // 不用 lateinit:进程刚起、AppGraph 还没 init 时若命中缓存读取,
+    // lateinit 会抛 UninitializedPropertyAccessException 直接崩;未初始化时按"没缓存"处理即可。
+    private var prefs: android.content.SharedPreferences? = null
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
     }
 
     fun get(id: Int): LevelDto? {
-        val raw = prefs.getString(KEY_PREFIX + id, null) ?: return null
+        val p = prefs ?: return null
+        val raw = p.getString(KEY_PREFIX + id, null) ?: return null
         return runCatching { json.decodeFromString<LevelDto>(raw) }.getOrNull()
     }
 
     fun put(level: LevelDto) {
+        val p = prefs ?: return
         val raw = json.encodeToString(level)
-        val editor = prefs.edit().putString(KEY_PREFIX + level.id, raw)
-        val order = prefs.getString(KEY_ORDER, null) ?: ""
+        val editor = p.edit().putString(KEY_PREFIX + level.id, raw)
+        val order = p.getString(KEY_ORDER, null) ?: ""
         val ids = order.split(",").mapNotNull { it.toIntOrNull() }.toMutableList()
         ids.removeAll { it == level.id } // 重复写入只更新不重复排队
         ids.add(0, level.id)

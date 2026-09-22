@@ -79,8 +79,8 @@ import kotlinx.coroutines.launch
 private enum class BattleView { MENU, NETWORK_SETUP, ROOM, BLUETOOTH }
 
 /**
- * 对战大厅 —— 网络对战(服务器中转 2~4 人同题竞速)已接通;
- * 蓝牙双机直连在 P3 模块接入。整个对战流程由本页内部状态驱动,不污染主路由。
+ * 对战大厅 —— 网络对战(服务器中转 2~4 人同题竞速)与蓝牙双机直连都已接通;
+ * 整个对战流程由本页内部状态驱动,不污染主路由。
  */
 @Composable
 fun BattleHomeScreen(
@@ -89,6 +89,8 @@ fun BattleHomeScreen(
 ) {
     var view by remember { mutableStateOf(BattleView.MENU) }
     var session by remember { mutableStateOf<BattleSession?>(null) }
+    // 游客提示:游客没有令牌,进对战只会拿到 401(以前还会因此被"假登出"踢回登录页)
+    var guestNotice by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val myId = AuthManager.session?.userId ?: -1
     val account = if (myId > 0) AppGraph.account(myId) else null
@@ -121,7 +123,16 @@ fun BattleHomeScreen(
         when (view) {
             BattleView.MENU -> BattleMenu(
                 onBack = onBack,
-                onNetwork = { view = BattleView.NETWORK_SETUP },
+                guestNotice = guestNotice,
+                onNetwork = {
+                    // 游客拦截:对战建房/加房都需要服务端鉴权,游客点了必然失败
+                    if (AuthManager.isGuest) {
+                        guestNotice = true
+                    } else {
+                        view = BattleView.NETWORK_SETUP
+                    }
+                },
+                onBluetooth = { view = BattleView.BLUETOOTH },
             )
 
             BattleView.NETWORK_SETUP -> NetworkSetup(
@@ -163,13 +174,35 @@ fun BattleHomeScreen(
 // ---------------- 入口菜单 ----------------
 
 @Composable
-private fun BattleMenu(onBack: () -> Unit, onNetwork: () -> Unit) {
+private fun BattleMenu(
+    onBack: () -> Unit,
+    guestNotice: Boolean,
+    onNetwork: () -> Unit,
+    onBluetooth: () -> Unit,
+) {
     ScreenTopBar(title = "对战大厅", subtitle = "同题竞速 · 先完成全对者胜", onBack = onBack)
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp),
     ) {
+        if (guestNotice) {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                shape = RoundedCornerShape(12.dp),
+                color = MaterialTheme.colorScheme.errorContainer,
+            ) {
+                Text(
+                    "⚠ 对战需要登录账号(当前是游客身份)。\n请回首页点「邮箱登录」,或用设置页的「切换账号」。",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.padding(12.dp),
+                )
+            }
+        }
         Text(
             "同题竞速:所有人拿到同一道题,实时可见彼此进度与用时;\n" +
                 "第一个完整还原图案的人获胜 —— 网络对战由服务器校验计时,蓝牙对战双机对称校验。",
@@ -182,11 +215,11 @@ private fun BattleMenu(onBack: () -> Unit, onNetwork: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(12.dp))
         EntryCard(
-            emoji = "📶", title = "蓝牙对战", subtitle = "双机近场直连 · 需两台真机",
-            accent = Cyan, actionText = "需真机", onClick = null,
+            emoji = "📶", title = "蓝牙对战", subtitle = "双机近场直连 · 需两台真机(模拟器无蓝牙硬件)",
+            accent = Cyan, actionText = "进入 ▶", onClick = onBluetooth,
         )
         Spacer(modifier = Modifier.height(12.dp))
-        // 说明为什么蓝牙在这里进不去:模拟器没有真实蓝牙硬件,RFCOMM 无法建连
+        // 蓝牙对战的前置条件说明(不再禁用入口,改为"进去后按提示操作")
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -196,14 +229,15 @@ private fun BattleMenu(onBack: () -> Unit, onNetwork: () -> Unit) {
         ) {
             Column(modifier = Modifier.padding(14.dp)) {
                 Text(
-                    "ℹ️ 蓝牙对战为什么点不了?",
+                    "ℹ️ 蓝牙对战怎么用?",
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Ink,
                 )
                 Text(
-                    "蓝牙对战走 Classic RFCOMM 直连,必须有两台带真实蓝牙硬件的手机。\n" +
-                        "模拟器(雷电 / Android Studio AVD)没有蓝牙适配器,拿不到 BluetoothAdapter,起不了监听套接字," +
-                        "因此无法建连 —— 这是模拟器的限制,不是功能缺失。\n" +
-                        "演示蓝牙请用两台真机近场配对;模拟器上请用「网络对战」(同一台服务器即可)。",
+                    "蓝牙对战走 Classic RFCOMM 直连,需要两台**带真实蓝牙硬件的手机**,并先完成系统级蓝牙配对。\n" +
+                        "① 主机:开启「可被发现」→ 选「我是主机」→ 等待连接;\n" +
+                        "② 客机:与主机配对后 → 选「加入对局」→ 选主机设备;\n" +
+                        "③ 主机选题发车,双方同题竞速,先完成全对者胜。\n" +
+                        "模拟器(雷电 / AVD)没有蓝牙适配器,RFCOMM 无法建连 —— 请改用「网络对战」。",
                     fontSize = 11.sp, color = Cocoa, lineHeight = 17.sp,
                     modifier = Modifier.padding(top = 4.dp),
                 )
@@ -624,7 +658,8 @@ fun PickPuzzleDialog(onPick: (Level) -> Unit, onDismiss: () -> Unit) {
     val online = remember {
         listOf(
             PickOption("每日一题", Dates.todayIso()) {
-                PuzzleRepository.fetchDaily(Dates.todayIso()).getOrNull()?.level?.toModel()
+                // 日期由服务端决定(东八区),避免设备时区不同拿到不同题
+                PuzzleRepository.fetchDaily(null).getOrNull()?.level?.toModel()
             },
             PickOption("随机简单题", "服务器即时生成") {
                 ApiClient.safe { ApiClient.api().bank(difficulty = "EASY", limit = 8) }
@@ -708,9 +743,11 @@ private fun RaceView(
     }
     val myFinished = session.mySubmitted
 
-    // 服务器权威计时显示:按 NTP 校时后的"服务器时间"重算本局用时(由服务器时钟驱动)
+    // 服务器权威计时显示:按 NTP 校时后的"服务器时间"重算本局用时(由服务器时钟驱动)。
+    // key 里必须带 clockOffsetMs:校时回包(异步)到达后要立刻按新偏移重算,
+    // 否则计时条会一直用到校时前的旧偏移,显示的用时是错的。
     var nowMs by remember { mutableLongStateOf(session.serverNowMs()) }
-    LaunchedEffect(session.phase, session.serverStartMs) {
+    LaunchedEffect(session.phase, session.serverStartMs, session.clockOffsetMs) {
         while (session.phase == BattlePhase.RACING) {
             delay(1000)
             nowMs = session.serverNowMs()

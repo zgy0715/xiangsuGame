@@ -75,8 +75,8 @@ object ApiClient {
     /**
      * 统一错误包装:Result.failure 的 message 已适合直接展示。
      * IOException → "无法连接服务器,请检查网络或服务器地址";
-     * HttpException → 解析服务端 {"error": ...} / {"detail": ...} 文案;
-     * 401 → "登录已过期"。
+     * HttpException → 解析服务端 {"error": ...} / {"detail": {"error": ...}} 文案;
+     * 401 → 顺带登出(清本地会话)并抛 [UnauthorizedException]。
      */
     suspend fun <T> safe(block: suspend () -> T): Result<T> = try {
         Result.success(block())
@@ -90,7 +90,20 @@ object ApiClient {
             408, 502, 503, 504 -> "服务器暂时不可用,请稍后重试"
             else -> "请求失败(${e.code()})"
         }
-        Result.failure(if (e.code() == 401) UnauthorizedException(message) else ApiException(message))
+        if (e.code() == 401) {
+            // 令牌已失效(过期/被服务端删除/账号注销):全局登出,由导航层回登录页。
+            // 以前这里只抛 UnauthorizedException,而全项目没有任何调用点处理它 ——
+            // App 会停在"假登录"状态:界面显示已登录,所有在线功能静默失败。
+            //
+            // ⚠ 但**只有本来持有令牌的会话**才该被登出:游客(以及任何无 token 的会话)
+            //   访问需鉴权接口时也会拿到 401,那时登出等于把游客直接踢回登录页。
+            if (AuthManager.hasToken) {
+                AuthManager.logout()
+            }
+            Result.failure(UnauthorizedException(message))
+        } else {
+            Result.failure(ApiException(message))
+        }
     } catch (e: IOException) {
         Result.failure(ApiException("无法连接服务器,请检查网络或设置页的服务器地址"))
     } catch (e: Exception) {

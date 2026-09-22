@@ -14,8 +14,8 @@ import kotlinx.serialization.json.put
  * 对战线协议 —— 一次成型,网络与蓝牙双端复用同一 schema:
  * 帧 = {"type": "...", "payload": {...}},两端实现完全同构。
  *
- * 上行(客户端→服务器): ready / start / choosePuzzle / progress / finish / ping /
- *                     rematch(重赛) / timeSync(NTP 校时)
+ * 上行(客户端→服务器): auth(首帧鉴权) / ready / start / choosePuzzle / progress / finish /
+ *                     ping / rematch(重赛) / timeSync(NTP 校时)
  * 下行(服务器→客户端): roomState / playerJoined / playerLeft / raceStart /
  *                     progress / finished / result / error / timeSync
  * 蓝牙端借同一字段名直接互发(去掉房间语义字段,主机兼做"服务器"校验)。
@@ -23,6 +23,9 @@ import kotlinx.serialization.json.put
 object BattleProtocol {
 
     // ---- 上行 ----
+    /** 连接建立后的第一帧:{"type":"auth","payload":{"token":"…"}}。
+     *  不走 URL query —— query 会被服务端访问日志完整打印。 */
+    const val UP_AUTH = "auth"
     const val UP_READY = "ready"
     const val UP_START = "start"
     const val UP_CHOOSE_PUZZLE = "choosePuzzle"
@@ -47,6 +50,10 @@ object BattleProtocol {
     const val DOWN_TIME_SYNC = "timeSync"
 
     // ---------------- 负载 DTO ----------------
+
+    /** 首帧鉴权负载(仅上行;服务器不回落)。 */
+    @Serializable
+    data class AuthPayload(val token: String = "")
 
     @Serializable
     data class RacePlayer(

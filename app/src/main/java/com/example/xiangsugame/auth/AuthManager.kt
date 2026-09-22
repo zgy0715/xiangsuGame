@@ -54,6 +54,14 @@ object AuthManager {
     /** 是否为离线游客(无 token,只玩内置关,不联网)。 */
     val isGuest: Boolean get() = session?.userId == GUEST_USER_ID
 
+    /**
+     * 当前是否持有服务端令牌。
+     *
+     * 401 处理必须看这个:**游客本来就没有 token**,把它当成"令牌失效"去全局登出,
+     * 会导致游客点一下对战/排行榜就被踢回登录页(两端都踩过这个坑)。
+     */
+    val hasToken: Boolean get() = !session?.token.isNullOrBlank()
+
     /** 冷启动静默续登:读上次持久化的会话(真实账号或游客)。 */
     private fun restore() {
         val userId = prefs.getInt(KEY_USER_ID, -1)
@@ -154,6 +162,43 @@ object AuthManager {
         session = null
         pendingNicknameSetup = false
         prefs.edit().remove(KEY_USER_ID).remove(KEY_TOKEN).remove(KEY_NICKNAME).apply()
+    }
+
+    /**
+     * 用户主动「退出登录」:先请服务端作废这张令牌,再清本地会话。
+     *
+     * 与 [logout] 的分工很重要:
+     *  - [logout] 只清本地 —— 401 自动登出走它(否则"401 → 请求注销 → 又 401"会递归);
+     *  - 本方法走网络 —— 不然那张 30 天有效的令牌会一直留在服务端,谁拿到都还能用。
+     * 服务端不可达时也照样清本地:退出登录不该被网络问题挡住。
+     */
+    suspend fun logoutAndRevoke(): Boolean {
+        val token = session?.token
+        val shouldRevoke = !isGuest && !token.isNullOrBlank()
+        val revoked = if (shouldRevoke) {
+            ApiClient.safe { ApiClient.api().logout() }.isSuccess
+        } else {
+            false
+        }
+        logout()
+        return revoked
+    }
+
+    /**
+     * 校验本地续登的会话是否仍然有效(点「继续」时调用)。
+     *
+     * 返回 true = 会话可用;false = 令牌已被服务端判失效(内部已登出)。
+     * 网络不通时返回 true(离线容忍:局域网演示时服务器没开也不该卡住入口),
+     * 真正的失效会在后续在线请求的 401 上由 [ApiClient.safe] 统一处理。
+     */
+    suspend fun verifyRestoredSession(): Boolean {
+        val current = session ?: return false
+        if (current.userId == GUEST_USER_ID) return true  // 游客是纯离线身份,无需校验
+        val result = ApiClient.safe { ApiClient.api().me() }
+        return result.fold(
+            onSuccess = { true },
+            onFailure = { it !is ApiClient.UnauthorizedException },
+        )
     }
 
     private fun persist(userId: Int, token: String, nickname: String): Session {

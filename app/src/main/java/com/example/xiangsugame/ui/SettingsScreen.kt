@@ -45,6 +45,7 @@ import androidx.compose.ui.unit.sp
 import com.example.xiangsugame.api.ApiClient
 import com.example.xiangsugame.auth.AuthManager
 import com.example.xiangsugame.data.LocalSettings
+import com.example.xiangsugame.service.BackgroundMusicManager
 import com.example.xiangsugame.service.SoundEffectManager
 import com.example.xiangsugame.ui.theme.Cocoa
 import com.example.xiangsugame.ui.theme.Coral
@@ -89,7 +90,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "模拟器用默认地址;真机填电脑局域网 IP",
+                    "默认已填电脑局域网 IP;换 Wi-Fi / 热点后改成电脑的新 IP(ipconfig 查)",
                     fontSize = 11.sp,
                     color = Cocoa,
                     modifier = Modifier.padding(top = 6.dp, bottom = 10.dp),
@@ -163,10 +164,35 @@ fun SettingsScreen(
                         )
                     }
                     Switch(
-                        checked = LocalSettings.musicEnabled,
+                        checked = LocalSettings.soundEffectsEnabled,
                         onCheckedChange = { enabled ->
                             SoundEffectManager.click()
-                            LocalSettings.saveMusicEnabled(enabled)
+                            LocalSettings.saveSoundEffectsEnabled(enabled)
+                        },
+                        colors = SwitchDefaults.colors(checkedTrackColor = Coral),
+                    )
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "背景音乐",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Ink,
+                        )
+                        Text(
+                            "循环播放的 BGM(退回后台自动暂停)",
+                            fontSize = 11.sp,
+                            color = Cocoa,
+                        )
+                    }
+                    Switch(
+                        checked = LocalSettings.backgroundMusicEnabled,
+                        onCheckedChange = { enabled ->
+                            SoundEffectManager.click()
+                            LocalSettings.saveBackgroundMusicEnabled(enabled)
+                            BackgroundMusicManager.onEnabledChanged(context, enabled)
                         },
                         colors = SwitchDefaults.colors(checkedTrackColor = Coral),
                     )
@@ -222,7 +248,11 @@ fun SettingsScreen(
                 ) { Text(if (isGuest) "游客离线身份,登录后可改昵称" else "修改昵称") }
                 Spacer(modifier = Modifier.height(4.dp))
                 OutlinedButton(
-                    onClick = { SoundEffectManager.click(); AuthManager.logout() },
+                    onClick = {
+                        SoundEffectManager.click()
+                        // 先请服务端作废令牌再清本地(离线/失败也照常退出,只是令牌留到自然过期)
+                        scope.launch { AuthManager.logoutAndRevoke() }
+                    },
                     colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text(if (isGuest) "返回登录页" else "退出登录") }

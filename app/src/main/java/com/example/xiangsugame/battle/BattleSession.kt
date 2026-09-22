@@ -21,10 +21,13 @@ import com.example.xiangsugame.battle.BattleProtocol.UP_REMATCH
 import com.example.xiangsugame.battle.BattleProtocol.UP_START
 import com.example.xiangsugame.battle.BattleProtocol.UP_TIME_SYNC
 import com.example.xiangsugame.model.Level
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlin.coroutines.EmptyCoroutineContext
 
 /** 对战侧身份(网络房:房主/房客;蓝牙:主机/客机语义相同)。 */
 enum class BattleRole { HOST, GUEST }
@@ -121,18 +124,35 @@ class BattleSession(
 
     private var lastProgressSent = 0L
 
+    /**
+     * 帧处理调度器。
+     *
+     * 生产环境用主线程:传输层在 IO/OkHttp 线程回调,而会话状态全是 Compose 的 mutableStateOf,
+     * 统一切主线程可避免高频 progress 与 finished 并发到达时的丢更新。
+     * 纯 JVM 单元测试里没有 Android 主线程 Looper,`Dispatchers.Main` 首次派发会抛
+     * IllegalStateException,所以这里探测一次并退回 Unconfined(立即执行,与主线程语义一致)。
+     */
+    private val frameDispatcher: CoroutineDispatcher = runCatching {
+        Dispatchers.Main.immediate.also { it.dispatch(EmptyCoroutineContext, Runnable { }) }
+    }.getOrElse { Dispatchers.Unconfined }
+
     // ---------------- 连接 / 关闭 ----------------
 
     /** 传输层已连接(由 UI 在合适时机调用)。 */
     fun open() {
         transport.connect(object : BattleTransport.Listener {
             override fun onFrame(raw: String) {
-                handleFrame(raw)
+                // 传输层在 IO/接收线程回调,而会话状态全是 Compose 的 mutableStateOf。
+                // 统一切到 [frameDispatcher] 处理:否则高频 progress 与 finished 并发到达时,
+                // 读-改-写序列(players = players.map { … })可能丢更新。
+                scope.launch(frameDispatcher) { handleFrame(raw) }
             }
 
             override fun onClosed(reason: String?) {
-                if (reason != null && reason != "bye") fatal = reason
-                phase = BattlePhase.CLOSED
+                scope.launch(frameDispatcher) {
+                    if (reason != null && reason != "bye") fatal = reason
+                    phase = BattlePhase.CLOSED
+                }
             }
         })
     }

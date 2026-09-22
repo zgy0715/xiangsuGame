@@ -253,6 +253,13 @@ data class HintStep(val row: Int, val col: Int, val target: Int, val message: St
  * 未决定、但由线索逻辑可推导出结果的格子——优先"纯约束传播"即可确定的格子,
  * 否则取唯一解下按行优先的第一个未决定格。盘面与线索矛盾时提示先检查错误。
  *
+ * **为什么要限时**:求解器为了确认"这一步必须这么走",要搜到证明没有第二个解才返回;
+ * 在 28×28 的大棋盘上这是重负载(实测第 10 关可达数秒),而调用点在 UI 线程同步执行 ——
+ * 玩家点一下💡界面就冻住。所以改成"有限预算的两级搜索":
+ *   ① 先用很短预算只做约束传播,拿到"纯逻辑一步可推出"的格子(绝大多数情况够用);
+ *   ② 没结果就再用较长但仍有上限的预算完整求解;
+ *   ③ 都没赶上就给一句降级提示,绝不卡界面。
+ *
  * @param board 当前棋盘(CellState.value:0 未定 / 1 涂黑 / 2 标记留白)
  */
 fun nextHint(clues: Array<IntArray>, board: Array<IntArray>): HintStep {
@@ -265,24 +272,18 @@ fun nextHint(clues: Array<IntArray>, board: Array<IntArray>): HintStep {
             }
         }
     }
-    val solver = PuzzleSolver(clues, maxSolutions = 2, initial = init)
-    val solutions = solver.solveAll()
-    if (solutions.isEmpty()) {
-        return HintStep(-1, -1, -1, "当前盘面存在矛盾,建议先「检查错误」再继续")
-    }
-    val solution = solutions[0]
-    // 优先提示根节点约束传播即能确定的格子(纯逻辑一步可推)
-    for ((r, c) in solver.rootForcedCells) {
-        if (board[r][c] != CellState.UNDECIDED.value) continue
-        return if (solution[r][c] == 1) {
-            HintStep(r, c, 1, "第 ${r + 1} 行 ${c + 1} 列应涂黑")
-        } else {
-            HintStep(r, c, 0, "第 ${r + 1} 行 ${c + 1} 列应留白(标 ✕)")
+
+    for (budget in longArrayOf(PropagationBudgetMs, FullSearchBudgetMs)) {
+        val solver = PuzzleSolver(clues, maxSolutions = 2, timeLimitMillis = budget, initial = init)
+        val solutions = solver.solveAll()
+        if (solver.timedOut) {
+            continue // 这一遍的结论不可信(可能漏解),换更大预算再来
         }
-    }
-    // 需要推演:取唯一解下第一个未决定格(其状态由唯一解锁定,同样"可推导")
-    for (r in board.indices) {
-        for (c in board[r].indices) {
+        if (solutions.isEmpty()) {
+            return HintStep(-1, -1, -1, "当前盘面存在矛盾,建议先「检查错误」再继续")
+        }
+        val solution = solutions[0]
+        for ((r, c) in solver.rootForcedCells) {
             if (board[r][c] != CellState.UNDECIDED.value) continue
             return if (solution[r][c] == 1) {
                 HintStep(r, c, 1, "第 ${r + 1} 行 ${c + 1} 列应涂黑")
@@ -290,6 +291,23 @@ fun nextHint(clues: Array<IntArray>, board: Array<IntArray>): HintStep {
                 HintStep(r, c, 0, "第 ${r + 1} 行 ${c + 1} 列应留白(标 ✕)")
             }
         }
+        for (r in board.indices) {
+            for (c in board[r].indices) {
+                if (board[r][c] != CellState.UNDECIDED.value) continue
+                return if (solution[r][c] == 1) {
+                    HintStep(r, c, 1, "第 ${r + 1} 行 ${c + 1} 列应涂黑(推演得出)")
+                } else {
+                    HintStep(r, c, 0, "第 ${r + 1} 行 ${c + 1} 列应留白(推演得出)")
+                }
+            }
+        }
+        return HintStep(-1, -1, -1, "盘面已经填满了,点「检查」看看对不对?")
     }
-    return HintStep(-1, -1, -1, "已全部填满,无需再提示")
+    return HintStep(-1, -1, -1, "这一步暂时推不出来(棋盘较大,计算超时)—— 先随手确定一格再点提示")
 }
+
+
+/** 提示求解的第一档预算(ms):只够约束传播,但能覆盖绝大多数盘面。 */
+private const val PropagationBudgetMs = 300L
+/** 提示求解的第二档预算(ms):完整求解的上限,超时就降级提示。 */
+private const val FullSearchBudgetMs = 1500L

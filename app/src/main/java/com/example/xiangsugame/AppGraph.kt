@@ -6,6 +6,7 @@ import com.example.xiangsugame.auth.AuthManager
 import com.example.xiangsugame.data.AccountStore
 import com.example.xiangsugame.data.LocalSettings
 import com.example.xiangsugame.data.PuzzleRepository
+import com.example.xiangsugame.receiver.NetworkMonitor
 import com.example.xiangsugame.service.SoundEffectManager
 
 /**
@@ -23,6 +24,9 @@ object AppGraph {
         ApiClient.init(appContext!!)
         PuzzleRepository.init(appContext!!)
         SoundEffectManager.init(appContext!!) // UI 音效(点击/通关/错误)
+        // 网络状态是进程级关注点:在这里注册一次,不随 Activity 生命周期注销
+        // (绑在 onDestroy 上时,旋转/多窗口重建会出现"旧实例注销、新实例没注册"的时序问题)
+        NetworkMonitor.init(appContext!!)
     }
 
     private val accounts = HashMap<Int, AccountStore>()

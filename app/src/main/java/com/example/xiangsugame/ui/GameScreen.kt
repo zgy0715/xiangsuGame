@@ -1226,6 +1226,9 @@ private fun WinOverlay(
                                 )
                             }
                         },
+                        // 视图从窗口摘下时必须停播并释放 MediaPlayer,
+                        // 否则通关页关掉后播放器还在循环播放(资源泄漏)
+                        onRelease = { view -> runCatching { view.stopPlayback() } },
                         modifier = Modifier
                             .fillMaxWidth(0.7f)
                             .heightIn(max = 160.dp)

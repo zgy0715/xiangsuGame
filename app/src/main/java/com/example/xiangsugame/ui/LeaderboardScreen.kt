@@ -104,7 +104,8 @@ fun LeaderboardScreen(
      * 默认选中我最近打过的那道 —— 打完对战进来就能直接看到自己的成绩。
      */
     suspend fun loadTargets() {
-        val daily = PuzzleRepository.fetchDaily(Dates.todayIso()).getOrNull()?.level
+        // 日期交给服务端(东八区)决定,客户端不按设备时区指定
+        val daily = PuzzleRepository.fetchDaily(null).getOrNull()?.level
         val mine = ApiClient.safe { ApiClient.api().myPuzzles(limit = 20) }
             .getOrNull()?.items.orEmpty()
 

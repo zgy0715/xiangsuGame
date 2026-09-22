@@ -96,8 +96,9 @@ fun HomeScreen(
     suspend fun loadDaily() {
         dailyLoading = true
         dailyError = false
-        val today = Dates.todayIso()
-        val result = PuzzleRepository.fetchDaily(today)
+        // 不传设备本地日期:"每日一题"的日历日由服务端按东八区判定(只接受今天±1 天),
+        // 客户端按设备时区指定会让"全服同题"失效。
+        val result = PuzzleRepository.fetchDaily(null)
         result.onSuccess {
             daily = it.level.toModel()
             // 本地没解过的缓存关再点会重玩;已解则提示去排行榜

@@ -34,6 +34,7 @@ import com.example.xiangsugame.model.GameMode
 import com.example.xiangsugame.model.Level
 import com.example.xiangsugame.model.Levels
 import com.example.xiangsugame.receiver.NetworkMonitor
+import com.example.xiangsugame.service.BackgroundMusicManager
 import com.example.xiangsugame.ui.BattleHomeScreen
 import com.example.xiangsugame.ui.GameScreen
 import com.example.xiangsugame.ui.HallScreen
@@ -49,13 +50,12 @@ import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        AppGraph.init(applicationContext) // 单例容器:设置/会话/网络/仓库
-        NetworkMonitor.init(applicationContext) // 网络状态广播监听
+        AppGraph.init(applicationContext) // 单例容器:设置/会话/网络/仓库/网络监听
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
         )
-        // 背景音乐暂未实现(见 设置页「体验」说明),故这里不启动任何音频服务
+        // 背景音乐走进程内单例(见 BackgroundMusicManager),在 onStart/onStop 里启停
         setContent {
             XiangsuGameTheme {
                 Surface(
@@ -68,10 +68,19 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    override fun onDestroy() {
-        NetworkMonitor.release(applicationContext)
-        super.onDestroy()
+    override fun onStart() {
+        super.onStart()
+        // 允许播放则开始/续播;开关关闭时内部直接返回
+        BackgroundMusicManager.start(this)
     }
+
+    override fun onStop() {
+        // 退到后台暂停(保留进度),不在 onDestroy 释放,免得横竖屏重建把音乐掐断
+        BackgroundMusicManager.pause()
+        super.onStop()
+    }
+    // 不再在 onDestroy 注销网络监听:它是进程级单例,回调应与进程同生命周期,
+    // 绑在 Activity 上反而会在重建时出现"旧实例注销、新实例没注册"的时序问题。
 }
 
 /**
@@ -87,13 +96,22 @@ fun XiangsuGameApp() {
     val push: (Screen) -> Unit = { stack = stack + it }
     val pop: () -> Unit = { if (stack.size > 1) stack = stack.dropLast(1) }
 
-    // —— 登录态驱动:登录成功 → 首页;登出 → 登录页 ——
+    // —— 登录态驱动 ——
+    // `entered` = 用户本次启动是否已明确进入(登录成功 / 游客进入 / 点「一键继续」)。
+    // 启动固定停在登录页:本地有续登会话也**不**自动进游戏,否则一打开就是游戏界面,
+    // 登录流程完全看不到(演示/答辩时尤其明显)。
     val logged = AuthManager.session != null
-    LaunchedEffect(logged) {
-        if (logged && current is Screen.Login) stack = listOf(Screen.Main)
-        if (!logged && current !is Screen.Login) stack = listOf(Screen.Login)
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(logged, entered) {
+        when {
+            !logged -> {
+                entered = false
+                if (current !is Screen.Login) stack = listOf(Screen.Login)
+            }
+            entered && current is Screen.Login -> stack = listOf(Screen.Main)
+        }
     }
-    // 会话被服务端判失效(401)时 AuthManager 由各调用点 logout(),同上处理
+    // 401(令牌失效)由 ApiClient.safe 统一 logout() → logged 变 false → 自动回登录页
     BackHandler(enabled = stack.size > 1 && current !is Screen.Login) { pop() }
 
     val userId = AuthManager.session?.userId
@@ -114,12 +132,14 @@ fun XiangsuGameApp() {
         pendingNickname = logged && !AuthManager.isGuest && AuthManager.consumeNewUserFlag()
     }
 
-    // 网络断网提示条(由 NetworkMonitor 广播驱动)
+    // 网络断网提示条(由 NetworkMonitor 驱动;可点击关闭,恢复网络后自动复位)
     val offline = !NetworkMonitor.isConnected
+    var offlineDismissed by remember { mutableStateOf(false) }
+    LaunchedEffect(offline) { if (!offline) offlineDismissed = false }
 
     Box(modifier = Modifier.fillMaxSize()) {
         when (val s = current) {
-            Screen.Login -> LoginScreen()
+            Screen.Login -> LoginScreen(onEnter = { entered = true })
 
             Screen.Main -> {
                 if (account != null) {
@@ -132,7 +152,7 @@ fun XiangsuGameApp() {
                         onOpenLeaderboard = { push(Screen.Leaderboard) },
                         onOpenBattle = { push(Screen.BattleHome) },
                         onOpenSettings = { push(Screen.Settings) },
-                        onLogout = { AuthManager.logout() },
+                        onLogout = { scope.launch { AuthManager.logoutAndRevoke() } },
                     )
                 }
             }
@@ -179,9 +199,10 @@ fun XiangsuGameApp() {
             }
         }
 
-        // 断网提示:顶部常驻红条(可点击关闭),恢复网络后自动消失
-        if (offline) {
+        // 断网提示:顶部红条,可点击关闭;恢复网络后自动复位,下次断网再提醒
+        if (offline && !offlineDismissed) {
             Surface(
+                onClick = { offlineDismissed = true },
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxWidth()
@@ -190,7 +211,7 @@ fun XiangsuGameApp() {
                 contentColor = Color.White,
             ) {
                 Text(
-                    "⚠ 网络已断开,在线功能暂不可用(内置关可离线玩)",
+                    "⚠ 网络已断开,在线功能暂不可用(内置关可离线玩)· 点击关闭",
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -214,8 +235,13 @@ fun XiangsuGameApp() {
     }
 }
 
-/** 页面类型(栈式)。 */
-private sealed interface Screen {
+/**
+ * 页面类型(栈式)。
+ *
+ * 从 `private` 放宽到 `internal`:导航计算被抽到了 ui/ScreenStack.kt,
+ * 它需要能构造/读取 Screen(这样"下一关"这类逻辑才能被单测覆盖)。
+ */
+internal sealed interface Screen {
     data object Login : Screen
     data object Main : Screen
     data object Hall : Screen

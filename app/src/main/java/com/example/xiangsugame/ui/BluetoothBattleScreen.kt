@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -59,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import com.example.xiangsugame.api.dto.toModel
 import com.example.xiangsugame.auth.AuthManager
 import com.example.xiangsugame.battle.BattlePhase
@@ -74,6 +76,7 @@ import com.example.xiangsugame.ui.theme.Cocoa
 import com.example.xiangsugame.ui.theme.Coral
 import com.example.xiangsugame.ui.theme.Cyan
 import com.example.xiangsugame.ui.theme.Ink
+import kotlinx.coroutines.delay
 
 private enum class BtStage { ROLE, DEVICE_PICK, ROOM }
 
@@ -125,12 +128,35 @@ fun BluetoothBattleRoot(
     }
 
     // —— 权限(31+ 运行时;旧版安装时已授)+ 可被发现 ——
+    // 时长给足 300 秒:客机那边要过权限弹窗、搜索设备、可能还要先完成系统配对,
+    // 120 秒经常不够,而窗口一过主机就彻底搜不到了。
+    var discoverableLeft by remember { mutableStateOf(0) }
     val discoverIntent = Intent(BluetoothAdapter.ACTION_REQUEST_DISCOVERABLE).apply {
-        putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 120)
+        putExtra(BluetoothAdapter.EXTRA_DISCOVERABLE_DURATION, 300)
     }
     val discoverableLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
-    ) { startHostAccept() }
+    ) { result ->
+        // ACTION_REQUEST_DISCOVERABLE 成功时 resultCode = 可被发现秒数;用户点「拒绝」是 RESULT_CANCELED。
+        // 旧代码无条件 startHostAccept():用户拒绝后主机照样进"等待连接",而实际对方永远搜不到本机。
+        if (result.resultCode > 0) {
+            discoverableLeft = result.resultCode
+            if (session == null) startHostAccept()
+        } else if (session == null) {
+            permissionMsg = "你拒绝了「允许附近的设备发现本机」,对方将搜不到你。" +
+                "请重新点「作为主机开局」,并在系统弹窗里选「允许」。"
+        } else {
+            permissionMsg = "已取消:本机不再对外可见,对方可能搜不到你。"
+        }
+    }
+    // 可被发现倒计时(归零后在等待页提示重新开启)
+    LaunchedEffect(discoverableLeft) {
+        while (discoverableLeft > 0) {
+            delay(1000)
+            discoverableLeft -= 1
+        }
+    }
+
     val permLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { result ->
@@ -268,6 +294,8 @@ fun BluetoothBattleRoot(
                         account = account,
                         onExit = { teardown() },
                         onPickPuzzle = { showPick = true },
+                        discoverableLeft = discoverableLeft,
+                        onRefreshDiscoverable = { discoverableLauncher.launch(discoverIntent) },
                     )
                 }
             }
@@ -306,41 +334,104 @@ private fun DevicePicker(
     var bonded by remember { mutableStateOf(listOf<Pair<BluetoothDevice, String>>()) }
     var found by remember { mutableStateOf(listOf<Pair<BluetoothDevice, String>>()) }
     var scanning by remember { mutableStateOf(false) }
+    /** 正在配对的设备名(非空时显示配对弹窗)。 */
+    var pairing by remember { mutableStateOf<String?>(null) }
+    var pendingDevice by remember { mutableStateOf<BluetoothDevice?>(null) }
+
+    val reloadBonded: () -> Unit = {
+        runCatching {
+            val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@runCatching
+            bonded = adapter.bondedDevices
+                // 只排除 BLE-only 设备;名字为空的也用地址兜底显示
+                .filter { it.type != BluetoothDevice.DEVICE_TYPE_LE }
+                .map { it to (it.name ?: it.address) }
+        }
+        Unit
+    }
+
     val receiver = remember {
         object : BroadcastReceiver() {
             override fun onReceive(c: Context?, intent: Intent?) {
-                if (intent?.action == BluetoothDevice.ACTION_FOUND) {
-                    val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
-                    if (dev != null) {
-                        val name = dev.name ?: dev.address
-                        found = (found + (dev to name)).distinctBy { it.first.address }
+                when (intent?.action) {
+                    BluetoothDevice.ACTION_FOUND -> {
+                        val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                        if (dev != null) {
+                            val name = dev.name ?: dev.address
+                            found = (found + (dev to name)).distinctBy { it.first.address }
+                        }
+                    }
+                    // 没有这个分支时 scanning 永远是 true:按钮一直显示"搜索中…"且被禁用,
+                    // 用户第二次点搜索根本没反应。
+                    BluetoothAdapter.ACTION_DISCOVERY_FINISHED -> scanning = false
+                    BluetoothDevice.ACTION_BOND_STATE_CHANGED -> {
+                        val dev = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE)
+                        val state = intent.getIntExtra(
+                            BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE)
+                        val target = pendingDevice
+                        if (dev != null && target != null && dev.address == target.address) {
+                            when (state) {
+                                BluetoothDevice.BOND_BONDED -> {
+                                    pairing = null
+                                    pendingDevice = null
+                                    reloadBonded()
+                                    onPick(dev, dev.name ?: dev.address)  // 配对成功 → 直接连接
+                                }
+                                BluetoothDevice.BOND_NONE -> {
+                                    pairing = null
+                                    pendingDevice = null
+                                    onMessage(
+                                        "与「${dev.name ?: dev.address}」配对未完成。" +
+                                            "请到「系统设置 → 蓝牙」里手动配对,再回来点连接。")
+                                }
+                                else -> Unit  // BOND_BONDING:继续等
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
-    fun loadBonded() {
-        runCatching {
-            val adapter = BluetoothAdapter.getDefaultAdapter() ?: return@runCatching
-            bonded = adapter.bondedDevices
-                .filter { it.name != null && it.type != BluetoothDevice.DEVICE_TYPE_LE }
-                .map { it to (it.name ?: it.address) }
-        }
-    }
-
-    LaunchedEffect(Unit) { loadBonded() }
+    LaunchedEffect(Unit) { reloadBonded() }
     DisposableEffect(Unit) {
-        val filter = IntentFilter(BluetoothDevice.ACTION_FOUND)
-        context.registerReceiver(receiver, filter)
+        val filter = IntentFilter().apply {
+            addAction(BluetoothDevice.ACTION_FOUND)
+            addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
+            addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+        }
+        // targetSdk 34+ 要求动态注册接收器显式声明导出标志(这些是系统广播,
+        // 理论上有豁免,但显式写成 NOT_EXPORTED 更稳妥,也避免将来被系统收紧时崩在这一行)。
+        runCatching {
+            ContextCompat.registerReceiver(
+                context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+        }.onFailure { context.registerReceiver(receiver, filter) }  // 旧版 core 兜底
         onDispose {
             runCatching { context.unregisterReceiver(receiver) }
             runCatching { BluetoothAdapter.getDefaultAdapter()?.cancelDiscovery() }
         }
     }
 
+    /** 点设备:未配对先走系统配对,配对成功再连接(RFCOMM 未配对时必然被拒)。 */
+    fun pick(dev: BluetoothDevice, name: String) {
+        if (dev.bondState == BluetoothDevice.BOND_BONDED) {
+            onPick(dev, name)
+            return
+        }
+        pendingDevice = dev
+        pairing = name
+        val started = runCatching { dev.createBond() }.getOrDefault(false)
+        if (!started) {
+            pairing = null
+            pendingDevice = null
+            onMessage(
+                "无法自动发起配对。请到「系统设置 → 蓝牙」里与「$name」手动配对," +
+                    "配对成功后再回来点「连接 ▶」。")
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
-        ScreenTopBar(title = "选择主机设备", subtitle = "让主机开启 120 秒可被发现后点搜索", onBack = onBack)
+        ScreenTopBar(title = "选择主机设备", subtitle = "主机需停在等待连接页;本页可配对", onBack = onBack)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -358,54 +449,104 @@ private fun DevicePicker(
                 enabled = !scanning,
                 modifier = Modifier.weight(1f),
             ) { Text(if (scanning) "搜索中…" else "🔍 搜索附近设备") }
-            TextButton(onClick = { loadBonded() }) { Text("刷新已配对") }
+            TextButton(onClick = reloadBonded) { Text("刷新已配对") }
+            TextButton(onClick = {
+                // 配对是 RFCOMM 的硬前提,系统设置页是最可靠的配对入口
+                runCatching {
+                    context.startActivity(
+                        Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            }) { Text("蓝牙设置") }
         }
+        Text(
+            "提示:先在这里点本机与主机的配对(或去系统蓝牙里配对),再点「连接 ▶」。" +
+                "已配对的设备会置顶显示;主机必须停在「等待好友连接…」页面。",
+            fontSize = 11.sp, color = Cocoa, lineHeight = 16.sp,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+        )
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = 8.dp),
+                .padding(top = 4.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            val list = found.ifEmpty { bonded }
+            // 已配对 ∪ 已发现(已配对置顶)。
+            // 旧代码是 `found.ifEmpty { bonded }`:只要搜到任何一台设备(耳机/电视/别人手机),
+            // 已经配对好的主机就完全不显示了 —— 这正是"搜到了却连不上"的常见原因。
+            val bondedMap = bonded.associateBy { it.first.address }
+            val list = (bonded + found.filter { it.first.address !in bondedMap })
+                .distinctBy { it.first.address }
             if (list.isEmpty()) {
                 item {
                     Text(
-                        if (scanning) "正在搜索…请在主机上保持本页" else "暂无设备 —— 点「搜索附近设备」," +
-                            "并确认主机已开启可被发现",
+                        if (scanning) {
+                            "正在搜索…请确认主机已点「作为主机开局」并允许被本机发现"
+                        } else {
+                            "暂无设备。两种做法:\n" +
+                                "① 到「系统设置 → 蓝牙」里与主机配对,回来后点「刷新已配对」;\n" +
+                                "② 让主机点「作为主机开局」,再点「搜索附近设备」。"
+                        },
                         fontSize = 12.sp, color = Cocoa,
                         modifier = Modifier.padding(top = 30.dp),
                         textAlign = TextAlign.Center,
+                        lineHeight = 18.sp,
                     )
                 }
             } else {
-                item { Text("共 ${list.size} 台设备", fontSize = 12.sp, color = Cocoa) }
+                item { Text("共 ${list.size} 台设备(已配对置顶)", fontSize = 12.sp, color = Cocoa) }
                 items(list, key = { it.first.address }) { (dev, name) ->
+                    val isBonded = bondedMap.containsKey(dev.address)
                     Card(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(14.dp))
-                            .clickable { onPick(dev, name) },
+                            .clickable { pick(dev, name) },
                         shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = BorderStroke(1.dp, Color(0x1FFFFFFF)),
+                        border = BorderStroke(1.dp, if (isBonded) Cyan.copy(alpha = 0.5f) else Color(0x1FFFFFFF)),
                     ) {
                         Row(
                             modifier = Modifier.padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("📱", fontSize = 20.sp)
+                            Text(if (isBonded) "✅" else "📱", fontSize = 20.sp)
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(name, fontSize = 14.sp, fontWeight = FontWeight.Bold, color = Ink)
-                                Text(dev.address, fontSize = 11.sp, color = Cocoa)
+                                Text(
+                                    dev.address + if (isBonded) " · 已配对" else " · 未配对(点它会先配对)",
+                                    fontSize = 11.sp, color = Cocoa,
+                                )
                             }
-                            Text("连接 ▶", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Cyan)
+                            Text(
+                                if (isBonded) "连接 ▶" else "配对并连接 ▶",
+                                fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Cyan,
+                            )
                         }
                     }
                 }
             }
         }
+    }
+
+    pairing?.let { name ->
+        AlertDialog(
+            onDismissRequest = { pairing = null; pendingDevice = null },
+            title = { Text("正在与「$name」配对") },
+            text = {
+                Text(
+                    "两台手机会弹出系统配对框,请在两台手机上确认同一个 6 位配对码。\n" +
+                        "配对成功后会自动开始连接;若没弹出或配对失败," +
+                        "请到「系统设置 → 蓝牙」里手动配对,再回来点连接。",
+                    fontSize = 13.sp, lineHeight = 19.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { pairing = null; pendingDevice = null }) { Text("取消") }
+            },
+        )
     }
 }
 
@@ -418,6 +559,8 @@ private fun BtRoomBody(
     account: AccountStore?,
     onExit: () -> Unit,
     onPickPuzzle: () -> Unit,
+    discoverableLeft: Int = 0,
+    onRefreshDiscoverable: (() -> Unit)? = null,
 ) {
     session.fatal?.let {
         AlertDialog(
@@ -448,11 +591,37 @@ private fun BtRoomBody(
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp))
                             Text(
-                                if (session.isHost) "正在等待蓝牙连接(最长 90 秒)…"
+                                if (session.isHost) "正在等待对方连接…(一直等,不超时)"
                                 else "正在连接主机…",
                                 fontSize = 13.sp, color = Cocoa,
                                 modifier = Modifier.padding(top = 10.dp),
                             )
+                            if (session.isHost) {
+                                Text(
+                                    "对方需要:①在「系统设置 → 蓝牙」里与本机配对;" +
+                                        "②在本 App 里选「作为客机加入」并点本机名字",
+                                    fontSize = 11.sp, color = Cocoa, lineHeight = 16.sp,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.padding(top = 8.dp, start = 30.dp, end = 30.dp),
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Text(
+                                    if (discoverableLeft > 0) {
+                                        "本机可被附近设备发现:剩余 $discoverableLeft 秒"
+                                    } else {
+                                        "⚠ 本机已不再对外可见,对方搜不到你"
+                                    },
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (discoverableLeft > 0) Cocoa else MaterialTheme.colorScheme.error,
+                                )
+                                if (onRefreshDiscoverable != null) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    OutlinedButton(onClick = onRefreshDiscoverable) {
+                                        Text("重新开启可被发现(300 秒)")
+                                    }
+                                }
+                            }
                         }
                     }
                 } else {
@@ -525,7 +694,40 @@ private fun BtRoomBody(
             }
         }
 
-        BattlePhase.CLOSED -> Box(modifier = Modifier.fillMaxSize()) {}
+        // 连接已关闭(连接超时/对方断开/发送失败):以前这里渲染一个空 Box,
+        // 用户只能看到白屏、只能靠系统返回键脱身 —— 现在给明确的说明和出口。
+        BattlePhase.CLOSED -> {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Text("📶", fontSize = 40.sp)
+                Text(
+                    if (session.raceLevel != null) "对局已结束" else "蓝牙连接已断开",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = Ink,
+                    modifier = Modifier.padding(top = 10.dp),
+                )
+                Text(
+                    "连接已关闭。若是等待超时,请确认两台手机已完成系统级蓝牙配对、" +
+                        "且主机已开启「可被发现」;具体原因见上方弹窗。",
+                    fontSize = 12.sp,
+                    color = Cocoa,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+                Spacer(modifier = Modifier.height(18.dp))
+                Button(
+                    onClick = onExit,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("返回对战大厅") }
+            }
+        }
     }
 
     session.notice?.let {

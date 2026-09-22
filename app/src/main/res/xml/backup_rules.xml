@@ -1,13 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+   备份规则(API 30 及以下 / fullBackupContent)。
+
+   默认全量备份会把 App 的全部 SharedPreferences 带走,其中 xiangsu_auth 存着
+   30 天有效的 Bearer token —— 一旦随云备份恢复到别的设备,等于把登录态送出去。
+   这里显式排除;API 31+ 的等价规则见 data_extraction_rules.xml。
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="sharedpref" path="xiangsu_auth.xml" />
 </full-backup-content>

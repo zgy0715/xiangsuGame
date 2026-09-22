@@ -79,17 +79,20 @@ class AccountStore(context: Context, val userId: Int) {
             .apply()
     }
 
-    /** 每日登录奖励:跨天才 +2(QuotaLedger),同日幂等。 */
+    /** 每日登录奖励:跨天才 +2(QuotaLedger),同日幂等。返回"本次是否真的发了奖励"。 */
     fun grantDailyBonusIfNewDay(): Boolean {
         val result = QuotaLedger.applyDailyBonus(fillQuotaUsed, lastBonusDay, Dates.todayIso())
-        if (result.granted <= 0 && result.lastBonusDay == lastBonusDay) return false
+        // 无论这次有没有真发放,都要把"最近结算日"落库:额度已满时 granted = 0,
+        // 旧写法直接 return false,KEY_BONUS_DAY 就永远停在旧日期,幂等状态失真。
+        val stateChanged = result.usedAfter != fillQuotaUsed || result.lastBonusDay != lastBonusDay
+        if (!stateChanged) return false
         fillQuotaUsed = result.usedAfter
         lastBonusDay = result.lastBonusDay
         prefs.edit()
             .putInt(KEY_FILL_USED, fillQuotaUsed)
             .putString(KEY_BONUS_DAY, lastBonusDay)
             .apply()
-        return true
+        return result.granted > 0
     }
 
     /** 消耗一次一键补齐额度;返回是否成功(额度用尽按钮应已灰化)。 */

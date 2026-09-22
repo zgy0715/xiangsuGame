@@ -26,6 +26,7 @@ object NetworkMonitor {
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var receiverRegistered = false
+    private var initialized = false
 
     /** 广播接收器:接收系统网络变化广播(作为 NetworkCallback 的补充)。 */
     private val receiver = object : BroadcastReceiver() {
@@ -36,10 +37,20 @@ object NetworkMonitor {
         }
     }
 
+    /**
+     * 进程级初始化(由 [com.example.xiangsugame.AppGraph.init] 在 Application 级调用一次)。
+     * 幂等:重复调用只刷新一次状态,不会重复注册回调。
+     */
     fun init(context: Context) {
-        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val app = context.applicationContext
+        if (initialized) {
+            refresh(app)
+            return
+        }
+        initialized = true
+        val cm = app.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         connectivityManager = cm
-        refresh(context)
+        refresh(app)
 
         // Android 7+ 用 NetworkCallback 监听(更可靠)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
@@ -59,19 +70,27 @@ object NetworkMonitor {
             )
         } else {
             // 旧版本用广播
-            context.registerReceiver(receiver, android.content.IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION))
+            app.registerReceiver(receiver, android.content.IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION))
             receiverRegistered = true
         }
     }
 
+    /**
+     * 注销监听。
+     *
+     * ⚠️ 正常运行时不调用:本对象是进程级单例,回调应当与进程同生命周期。
+     * 以前绑在 MainActivity.onDestroy 上,旋转/多窗口重建时会出现"旧实例注销、新实例没注册"
+     * 的时序问题,导致状态永久冻结。保留此方法仅供测试使用。
+     */
     fun release(context: Context) {
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         networkCallback = null
         if (receiverRegistered) {
-            runCatching { context.unregisterReceiver(receiver) }
+            runCatching { context.applicationContext.unregisterReceiver(receiver) }
             receiverRegistered = false
         }
         connectivityManager = null
+        initialized = false
     }
 
     /** 主动刷新一次网络状态。 */

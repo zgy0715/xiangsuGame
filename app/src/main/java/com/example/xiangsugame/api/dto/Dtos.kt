@@ -3,6 +3,10 @@ package com.example.xiangsugame.api.dto
 import com.example.xiangsugame.model.Difficulty
 import com.example.xiangsugame.model.Level
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 // ---------------- 谜题 ----------------
 
@@ -162,8 +166,25 @@ data class PlayedPuzzle(
 @Serializable
 data class MyPuzzlesResponse(val items: List<PlayedPuzzle> = emptyList())
 
-/** 服务端错误体: {"error": "..."}(FastAPI HTTPException detail 透传)。 */
+/**
+ * 服务端错误体。
+ *
+ * FastAPI 的 HTTPException(detail=…) 会原样包成 `{"detail": …}`:
+ *   - 本项目绝大多数错误是 `detail={"error": "验证码错误"}` → 对象;
+ *   - 少数(如 422 参数校验)是 `detail=[…]` → 数组;
+ *   - 字符串形式的 detail 也存在。
+ *
+ * 以前这里把 detail 声明成 `String?`,于是**对象形式的 detail 解码直接失败**,
+ * 被 ApiClient.safe 的 runCatching 吞掉,所有服务端文案都退化成"请求失败(400/429)"。
+ */
 @Serializable
-data class ApiError(val error: String? = null, val detail: String? = null) {
-    val message: String get() = error ?: detail ?: "请求失败"
+data class ApiError(
+    val error: String? = null,
+    val detail: JsonElement? = null,
+) {
+    val message: String
+        get() = error
+            ?: (detail as? JsonPrimitive)?.contentOrNull
+            ?: ((detail as? JsonObject)?.get("error") as? JsonPrimitive)?.contentOrNull
+            ?: "请求失败"
 }
