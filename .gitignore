@@ -1,3 +1,4 @@
+# ============ Android / Gradle ============
 *.iml
 .gradle
 /.idea/
@@ -9,15 +10,43 @@
 .cxx
 local.properties
 /gradle/gradle-daemon-jvm.properties
+.kotlin/
 
-# Python (tools/)
+# ============ HarmonyOS / DevEco ============
+# 真正的 DevEco 工程在仓库外的 DEVxiangs(构建工作区);
+# 仓库内只保留 harmony/ 下的源码与脚本,所以只忽略本地缓存与产物。
+.hvigor/
+/oh_modules/
+**/oh_modules/
+/.clangd
+/.clang-format
+/.clang-tidy
+
+# 鸿蒙签名产物:harmony/dist 里的已签名 HAP 与中间证书
+# (要分发时把 HAP 单独拷出去,不必进版本库)
+harmony/dist/*.hap
+harmony/dist/*.cer
+harmony/dist/*.p12
+harmony/dist/*.p7b
+harmony/dist/*.log
+# 调试签名 profile(由 tools/make_harmony_profile.py 生成,内含本机设备 UDID,不外传)
+harmony/dist/*.json
+
+# ============ Python (tools/ server/) ============
 __pycache__/
 *.pyc
 
-# Server (FastAPI) runtime artifacts
+# ============ 服务端运行时产物 ============
 server/xiangsu.db*
-.kotlin/
+server/*.db-wal
+server/*.db-shm
 
+# 本地冒烟/诊断用的临时库与沙箱工作目录(XIANGSU_DB=.tmp/xxx.db 之类)
+.tmp/
+*.db-shm
+*.db-wal
+
+# ============ 密钥 ============
 # 本机发信密钥(邮箱授权码):绝不进版本库,见 server/smtp.env.example
 server/smtp.env
 *.env
