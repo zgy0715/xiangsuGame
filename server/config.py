@@ -49,5 +49,14 @@ SMTP_SENDER_NAME = os.environ.get("XIANGSU_SMTP_NAME", "像素填空")
 # ---------------- 每日一题(东八区日历日) ----------------
 TIMEZONE = os.environ.get("XIANGSU_TZ", "Asia/Shanghai")
 
+# ---------------- CORS ----------------
+# 原生 App 不需要 CORS,默认**不启用**中间件(空列表)。
+# 以前写死 allow_origins=["*"]:任意网页都能在浏览器里跨域调用匿名端点
+# (/api/auth/send-code 等)并读走响应。要用网页/调试工具跨域访问时,
+# 用 XIANGSU_CORS_ORIGINS 显式列白名单,例如:
+#   XIANGSU_CORS_ORIGINS=http://localhost:5173,http://192.168.1.5:3000
+CORS_ORIGINS = [o.strip() for o in os.environ.get("XIANGSU_CORS_ORIGINS", "").split(",")
+                if o.strip()]
+
 # ---------------- 题库各难度保底数量(首次请求或后台预热时补齐) ----------------
 BANK_TARGET = {"EASY": 12, "MEDIUM": 10, "HARD": 8}

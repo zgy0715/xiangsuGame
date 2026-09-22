@@ -23,7 +23,7 @@ import content
 import db
 import mailer
 from auth import router as auth_router
-from config import BANK_TARGET
+from config import BANK_TARGET, CORS_ORIGINS
 from leaderboard import router as leaderboard_router
 from puzzles import router as puzzles_router
 from rooms import router as rooms_router
@@ -54,10 +54,13 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="像素填空 · 康思游戏服务端", version="1.0", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
-)
+# CORS 默认关闭(原生 App 不需要)。以前写死 allow_origins=["*"],
+# 任意网页都能跨域调用 /api/auth/send-code 这类匿名端点并读取响应。
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=CORS_ORIGINS, allow_methods=["*"], allow_headers=["*"],
+    )
 
 app.include_router(auth_router)
 app.include_router(puzzles_router)

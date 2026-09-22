@@ -10,15 +10,19 @@
      → 取该邮箱最新验证码 → 校验未过期/未使用/未超失败次数 → 比对哈希 →
        消费该码(单次使用)→ get_or_create_user → 签发 Bearer token(30 天)
 
-安全性:验证码不落明文、10 分钟过期、用后即焚、错误 5 次作废、发送频率受限;
-AppSecret 之类的第三方密钥不再需要——整个登录链路自持,可离线自测。
+安全性:验证码不落明文、10 分钟过期、用后即焚、错误 5 次作废、发送频率受限
+(按邮箱 + 按 IP 双维度);AppSecret 之类的第三方密钥不再需要——整个登录链路自持。
+
+⚠️ XIANGSU_ECHO_CODE=1 会把验证码写进 HTTP 响应(仅限本机/局域网演示,生产务必关闭)。
 """
 import hashlib
 import re
 import secrets
+import threading
+import time
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
@@ -35,6 +39,69 @@ EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
 
 # 验证码固定 6 位十进制
 CODE_RE = re.compile(r"^\d{6}$")
+
+# 昵称最大长度(按码点计)
+NICKNAME_MAX_CHARS = 20
+# 控制字符、零宽字符、BiDi 覆盖符:会把排行榜/房间列表的排版搞乱,直接剔除
+NICKNAME_FORBIDDEN_RE = re.compile(
+    "[\x00-\x1f\x7f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]")
+
+# —— 发信频率:IP 维度滑动窗口 ——
+# 只按邮箱限流时,攻击者可以拿一份邮箱字典逐个发信,把 SMTP 配额耗光
+# (配额一凉,发信失败 → 又可能触发控制台兜底路径)。进程内计数足够单 worker 部署。
+IP_WINDOW_SECONDS = 3600
+IP_MAX_SENDS_PER_HOUR = 20
+_ip_sends = {}
+_ip_lock = threading.Lock()
+
+
+def _ip_throttled(ip: str) -> bool:
+    """记录一次发信并判断该 IP 是否已超限(True = 超限,拒绝)。"""
+    now = time.time()
+    with _ip_lock:
+        stamps = [t for t in _ip_sends.get(ip, []) if now - t < IP_WINDOW_SECONDS]
+        if len(stamps) >= IP_MAX_SENDS_PER_HOUR:
+            _ip_sends[ip] = stamps
+            return True
+        stamps.append(now)
+        _ip_sends[ip] = stamps
+        if len(_ip_sends) > 10000:  # 防字典无限增长
+            for key in [k for k, v in _ip_sends.items() if not v]:
+                _ip_sends.pop(key, None)
+        return False
+
+
+# —— 登录失败节流(邮箱维度滑动窗口)——
+# 单个验证码只允许错 5 次,但攻击者每 60 秒重新发码就能刷新配额,连续猜码没有
+# 全局兜底(6 位码空间虽大,纵深防御不该只靠它)。
+LOGIN_FAIL_WINDOW_SECONDS = 900
+LOGIN_FAIL_MAX = 20
+_login_fails = {}
+_login_lock = threading.Lock()
+
+
+def _login_blocked(email: str) -> bool:
+    now = time.time()
+    with _login_lock:
+        stamps = [t for t in _login_fails.get(email, []) if now - t < LOGIN_FAIL_WINDOW_SECONDS]
+        _login_fails[email] = stamps
+        return len(stamps) >= LOGIN_FAIL_MAX
+
+
+def _record_login_failure(email: str):
+    now = time.time()
+    with _login_lock:
+        stamps = [t for t in _login_fails.get(email, []) if now - t < LOGIN_FAIL_WINDOW_SECONDS]
+        stamps.append(now)
+        _login_fails[email] = stamps
+        if len(_login_fails) > 10000:
+            for key in [k for k, v in _login_fails.items() if not v]:
+                _login_fails.pop(key, None)
+
+
+def _clear_login_failures(email: str):
+    with _login_lock:
+        _login_fails.pop(email, None)
 
 
 def normalize_email(raw: str) -> str:
@@ -106,8 +173,14 @@ class SendCodeResponse(BaseModel):
 
 
 @router.post("/send-code", response_model=SendCodeResponse)
-async def send_code(req: SendCodeRequest):
+async def send_code(req: SendCodeRequest, request: Request):
     email = normalize_email(req.email)
+
+    # IP 维度限流(见 _ip_throttled):挡"拿邮箱字典刷信"这种绕过邮箱限流的用法
+    client_ip = (request.client.host if request.client else "") or "unknown"
+    if _ip_throttled(client_ip):
+        raise HTTPException(status_code=429,
+                            detail={"error": "当前网络发信过于频繁,请稍后再试"})
 
     # —— 限流:重发间隔 → 每小时 → 每天 ——
     since = _seconds_since_send(email)
@@ -129,13 +202,17 @@ async def send_code(req: SendCodeRequest):
     delivered, error = await run_in_threadpool(
         mailer.send_code_email, email, code, max(1, OTP_TTL_SECONDS // 60))
 
-    # devCode 回显策略:
-    #   - 显式开启 XIANGSU_ECHO_CODE=1:始终回显(演示/答辩用)
-    #   - SMTP 未配置或发信失败(delivered != smtp):自动回显,保证"没配邮箱授权码也能登录"
-    #     —— 解决"邮箱没开 SMTP 服务就压根登不上"的可用性问题
-    #   - SMTP 真发成功:不回显,正常走邮箱收码
+    # devCode 回显策略(安全默认):
+    #   - 只有显式开启 XIANGSU_ECHO_CODE=1 才回显(本机/局域网演示、答辩现场用);
+    #   - SMTP 未配置或发信失败**不回显**,只返回 delivered=False,由客户端提示
+    #     "未配置发信,请联系管理员"。
+    # 这里以前写的是 `ECHO_OTP_CODE or not actually_delivered`:默认部署根本没配 SMTP,
+    # 于是每次发码都把 6 位验证码直接放进 HTTP 响应 —— 知道邮箱就能登录任何账号;
+    # SMTP 偶发失败(限流/超时)也会随机走到这条泄露分支。
+    show_dev_code = ECHO_OTP_CODE
+    # delivered=False 仍然要如实返回:客户端据此提示"服务端没配置发信/发信失败",
+    # 但**不再**把验证码本身交出去。
     actually_delivered = (delivered == mailer.DELIVERY_SMTP)
-    show_dev_code = ECHO_OTP_CODE or not actually_delivered
 
     return SendCodeResponse(
         email=email,
@@ -156,6 +233,25 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 def login(req: LoginRequest):
+    """登录入口:先做邮箱维度失败节流,再进实际校验。
+
+    所有失败路径(Exception)都计入节流,成功则清零 —— 否则攻击者可以靠
+    "每 60 秒重新发码" 反复刷新每码 5 次的配额。
+    """
+    email = normalize_email(req.email)
+    if _login_blocked(email):
+        raise HTTPException(status_code=429,
+                            detail={"error": "尝试次数过多,请稍后再试"})
+    try:
+        result = _login_inner(req)
+    except HTTPException:
+        _record_login_failure(email)
+        raise
+    _clear_login_failures(email)
+    return result
+
+
+def _login_inner(req: LoginRequest):
     email = normalize_email(req.email)
     code = (req.code or "").strip()
     if not CODE_RE.match(code):
@@ -204,11 +300,20 @@ class NicknameRequest(BaseModel):
 
 
 def normalize_nickname(raw: str) -> str:
-    """昵称校验:去首尾空白,非空且不超过 20 个字符。返回规范化结果,非法抛 400。"""
-    name = (raw or "").strip()
-    if not name:
+    """昵称校验:剔除控制字符/零宽字符/BiDi 覆盖符,压缩空白,非空且不超过 20 个字符。
+
+    以前只做 strip + 截断,于是换行、零宽字符、RTL 覆盖符都能落库并原样出现在
+    排行榜与对战房间里(可以伪造出"多行昵称",或让整行文字显示方向错乱)。
+    """
+    text = NICKNAME_FORBIDDEN_RE.sub("", raw or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
         raise HTTPException(status_code=400, detail={"error": "昵称不能为空"})
-    return name[:20]
+    if len(text) > NICKNAME_MAX_CHARS:
+        text = text[:NICKNAME_MAX_CHARS].strip()
+        if not text:
+            raise HTTPException(status_code=400, detail={"error": "昵称不能为空"})
+    return text
 
 
 @router.post("/nickname")

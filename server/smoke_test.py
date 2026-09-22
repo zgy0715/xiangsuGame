@@ -12,8 +12,10 @@ import json
 import os
 import sys
 import tempfile
+import types
 
-tmp_db = os.path.join(tempfile.mkdtemp(prefix="xiangsu_smoke_"), "smoke.db")
+tmp_db = os.environ.get("XIANGSU_DB") or os.path.join(
+    tempfile.mkdtemp(prefix="xiangsu_smoke_"), "smoke.db")
 os.environ["XIANGSU_DB"] = tmp_db
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -25,6 +27,19 @@ import auth  # noqa: E402
 import mailer  # noqa: E402
 from auth import normalize_email, normalize_nickname, change_nickname, NicknameRequest  # noqa: E402
 from leaderboard import compute_board, compute_my_best, compute_my_puzzles  # noqa: E402
+
+# 下发给客户端的 id 必须落在这个区间:安卓端用 Kotlin Int(32 位)承载
+INT32_MIN, INT32_MAX = -2147483648, 2147483647
+
+
+def _fake_request(host="127.0.0.1"):
+    """端点函数直调时补一个假 Request(send_code 只用到 request.client.host 做 IP 限流)。"""
+    return types.SimpleNamespace(client=types.SimpleNamespace(host=host))
+
+
+def _send_code(email, host="127.0.0.1"):
+    """直接调用 send-code 端点函数(绕过 HTTP 层)。"""
+    return asyncio.run(auth.send_code(auth.SendCodeRequest(email=email), _fake_request(host)))
 
 
 def expect_http_error(call, status, contains=None, label=""):
@@ -59,7 +74,7 @@ def _auth_flow():
             expect_http_error(lambda e=bad: normalize_email(e), 400, "邮箱格式", f"非法邮箱 {bad!r}")
 
         # —— 第一步:发码 ——
-        resp = asyncio.run(auth.send_code(auth.SendCodeRequest(email="A@Example.com")))
+        resp = _send_code("A@Example.com")
         assert resp.email == "a@example.com" and resp.expiresInSeconds == 600
         assert resp.delivered is False and len(sent["code"]) == 6 and sent["code"].isdigit()
         code1 = sent["code"]
@@ -69,7 +84,7 @@ def _auth_flow():
         assert code1 not in otp["code_hash"] and otp["used"] == 0 and otp["attempts"] == 0
         # 重发间隔限流:立刻再发必被拒
         expect_http_error(
-            lambda: asyncio.run(auth.send_code(auth.SendCodeRequest(email="a@example.com"))),
+            lambda: _send_code("a@example.com"),
             429, "太频繁", "重发间隔限流")
 
         # —— 第二步:错码 → 次数耗尽后即使给对码也拒绝 ——
@@ -97,13 +112,13 @@ def _auth_flow():
             400, "已使用", "验证码单次使用")
 
         # —— 老用户再次登录:复用同一 userId,isNew=False ——
-        asyncio.run(auth.send_code(auth.SendCodeRequest(email="b@example.com")))
+        _send_code("b@example.com")
         code2 = sent["code"]
         first = auth.login(auth.LoginRequest(email="b@example.com", code=code2))
         assert first["isNew"] is True
         db.execute("UPDATE email_otps SET created_at = datetime('now','-2 hours') WHERE email = ?",
                    ("b@example.com",))  # 绕过重发间隔(仅测试)
-        asyncio.run(auth.send_code(auth.SendCodeRequest(email="b@example.com")))
+        _send_code("b@example.com")
         again = auth.login(auth.LoginRequest(email="b@example.com", code=sent["code"]))
         assert again["isNew"] is False and again["userId"] == first["userId"]
         assert again["nickname"] == first["nickname"], "重复登录不应改名"
@@ -113,7 +128,7 @@ def _auth_flow():
                    "WHERE email = ? AND used = 0", ("b@example.com",))
         db.execute("UPDATE email_otps SET created_at = datetime('now','-2 hours') WHERE email = ?",
                    ("b@example.com",))
-        asyncio.run(auth.send_code(auth.SendCodeRequest(email="b@example.com")))
+        _send_code("b@example.com")
         db.execute("UPDATE email_otps SET expires_at = datetime('now','-1 seconds') WHERE email = ?",
                    ("b@example.com",))
         expect_http_error(
@@ -123,7 +138,7 @@ def _auth_flow():
         # —— 失败次数上限:5 次错码后作废 ——
         db.execute("UPDATE email_otps SET created_at = datetime('now','-2 hours') WHERE email = ?",
                    ("b@example.com",))
-        asyncio.run(auth.send_code(auth.SendCodeRequest(email="b@example.com")))
+        _send_code("b@example.com")
         good = sent["code"]
         wrong = "000000" if good != "000000" else "111111"
         for i in range(5):
@@ -137,11 +152,11 @@ def _auth_flow():
         # —— 重发即作废旧码:新码可用,旧码失效 ——
         db.execute("UPDATE email_otps SET created_at = datetime('now','-2 hours') WHERE email = ?",
                    ("b@example.com",))
-        asyncio.run(auth.send_code(auth.SendCodeRequest(email="b@example.com")))
+        _send_code("b@example.com")
         stale = sent["code"]
         db.execute("UPDATE email_otps SET created_at = datetime('now','-2 hours') WHERE email = ?",
                    ("b@example.com",))
-        asyncio.run(auth.send_code(auth.SendCodeRequest(email="b@example.com")))
+        _send_code("b@example.com")
         fresh = sent["code"]
         assert stale != fresh
         expect_http_error(
@@ -158,7 +173,7 @@ def _auth_flow():
                    "WHERE email = ?", ("c@example.com",))
         assert db.count_otps_since("c@example.com", 3600) == 5
         expect_http_error(
-            lambda: asyncio.run(auth.send_code(auth.SendCodeRequest(email="c@example.com"))),
+            lambda: _send_code("c@example.com"),
             429, "1 小时内", "每小时发送上限")
         print("[ok] auth: 邮箱验证码(发码/限流/过期/错码上限/单次使用/老用户复用账号)")
     finally:
@@ -372,6 +387,52 @@ def _rooms_multi_flow(uid1, tok1, uid2, uid3):
     rooms._rooms.clear()
 
 
+def _ws_auth_flow(uid1, tok1):
+    """WebSocket 鉴权两条路径:
+      a) 首帧 auth 帧(新客户端:token 不进 URL,避免写进访问日志)→ 正常进房;
+      b) 首帧 auth 带无效 token → 以 4401 关闭。
+    query 传 token 的旧路径由 _rooms_flow / _rooms_multi_flow 覆盖(仍兼容)。
+    """
+    rooms._rooms.clear()
+    rooms._rooms["RW01"] = {
+        "code": "RW01", "host_id": uid1, "phase": "lobby",
+        "players": {}, "puzzle": None, "start_ms": None, "finishes": [],
+    }
+
+    async def main_flow():
+        # a) token 只在首帧里
+        ws = FakeWs()
+        task = asyncio.create_task(rooms.room_socket(ws, "RW01", ""))
+        await asyncio.sleep(0.02)
+        assert ws.accepted, "连接应先 accept(便于把拒绝原因送回客户端)"
+        assert not ws.frames("roomState"), "未鉴权前不应收到 roomState"
+        ws.send("auth", {"token": tok1})
+        await asyncio.sleep(0.05)
+        states = ws.frames("roomState")
+        assert states, "首帧 auth 后应收到 roomState"
+        players = states[-1]["payload"]["players"]
+        assert any(p["userId"] == uid1 for p in players), "首帧 auth 应把该用户放进房间"
+        task.cancel()
+
+        # b) 无效 token:以 4401 关闭
+        ws2 = FakeWs()
+        old_timeout = rooms.AUTH_FRAME_TIMEOUT_SECONDS
+        rooms.AUTH_FRAME_TIMEOUT_SECONDS = 0.2
+        try:
+            task2 = asyncio.create_task(rooms.room_socket(ws2, "RW01", ""))
+            await asyncio.sleep(0.02)
+            ws2.send("auth", {"token": "not-a-real-token"})
+            await asyncio.sleep(0.05)
+            assert ws2.closed and ws2.closed[0] == 4401, \
+                f"无效 token 应以 4401 关闭,实际 {ws2.closed}"
+            task2.cancel()
+        finally:
+            rooms.AUTH_FRAME_TIMEOUT_SECONDS = old_timeout
+
+    asyncio.run(main_flow())
+    print("[ok] ws auth: 首帧 auth 进房 / 无效 token 4401 拒绝")
+
+
 def main():
     db.init_db()
 
@@ -393,6 +454,10 @@ def main():
     row2 = content.ensure_daily(conn, day)
     assert row1["puzzle_id"] == row2["puzzle_id"], "同日期每日一题必须一致"
     assert row1["puzzle_id"] < 0, "网络关卡 id 必须为负"
+    # 下发给客户端的 id 必须落在 Int32 内:安卓端用 Kotlin Int 承载,溢出会让整个接口
+    # 在客户端解析失败(曾经用"时间戳毫秒"生成 id,直接把每日一题打成了"离线")。
+    for pid in (row1["puzzle_id"],):
+        assert INT32_MIN <= pid <= INT32_MAX, f"id 超出 Int32: {pid}"
     level = content.row_to_level(row1)
     assert generator.verify_unique(level), "每日一题未通过唯一解校验"
     print(f"[ok] daily {day} → id={row1['puzzle_id']} {row1['difficulty']}")
@@ -402,6 +467,9 @@ def main():
     assert content.bank_count(conn, "EASY") >= 3
     rows, total = content.bank_rows(conn, "EASY", 0, 10)
     assert total >= 3 and len(rows) >= 3
+    assert all(INT32_MIN <= r["puzzle_id"] <= INT32_MAX for r in rows), "题库 id 超出 Int32"
+    assert all(INT32_MIN <= r["puzzle_id"] <= INT32_MAX
+               for r in content.bank_rows(conn, "EASY", 0, 100)[0]), "题库 id 超出 Int32"
     # bank 列表元信息不含超大答案,取整题接口再验唯一性
     full = content.row_to_level(content.puzzle_row(conn, rows[0]["puzzle_id"]))
     assert generator.verify_unique(full)
@@ -453,6 +521,9 @@ def main():
     uid3, _ = db.get_or_create_user("c@example.com", "小C")
     _rooms_multi_flow(uid1, tok1, uid2, uid3)
     print("[ok] room multi: 第一人完成不冻结他人 / 继续上报 / 全员完成出排行榜")
+
+    # 8.5) WS 鉴权:首帧 auth(token 不进 URL)/ 无效 token 4401
+    _ws_auth_flow(uid1, tok1)
 
     # 9) "我打过分的题"列表 —— 排行榜"对战榜"能选到题目的依据
     conn = db.connect()

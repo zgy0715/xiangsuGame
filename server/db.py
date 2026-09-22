@@ -13,6 +13,7 @@
 import datetime
 import secrets
 import sqlite3
+from contextlib import contextmanager
 
 from config import DB_PATH
 
@@ -77,8 +78,27 @@ def connect():
     return conn
 
 
+@contextmanager
+def session():
+    """短连接会话:正常结束提交,异常回滚,**最后一定 close()**。
+
+    注意:`with sqlite3.connect(...)` 只负责提交/回滚事务,并**不关闭连接**;
+    以前全部依赖 CPython 引用计数在函数返回时顺手回收,连接句柄与 WAL 会一直挂着。
+    """
+    conn = connect()
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def init_db():
-    with connect() as conn:
+    conn = connect()
+    try:
         conn.executescript(SCHEMA)
         # 迁移:登录方式由"微信式 code"改为"邮箱验证码"后,users 增加 email 列。
         # 旧库(openid 存的是 mock_/微信 openid)把 openid 回填为 email 占位,
@@ -108,23 +128,24 @@ def init_db():
                 "CREATE INDEX IF NOT EXISTS idx_records_puzzle ON solve_records(puzzle_id);"
                 "CREATE INDEX IF NOT EXISTS idx_records_user ON solve_records(user_id);"
             )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def execute(sql, params=()):
     """写操作(自动提交)。返回 lastrowid / rowcount 由调用方取 cur。"""
-    with connect() as conn:
-        cur = conn.execute(sql, params)
-        conn.commit()
-        return cur
+    with session() as conn:
+        return conn.execute(sql, params)
 
 
 def query_one(sql, params=()):
-    with connect() as conn:
+    with session() as conn:
         return conn.execute(sql, params).fetchone()
 
 
 def query_all(sql, params=()):
-    with connect() as conn:
+    with session() as conn:
         return conn.execute(sql, params).fetchall()
 
 
@@ -134,20 +155,33 @@ def get_or_create_user(email, nickname_hint=None):
     """按邮箱取账号,不存在则创建。返回 (user_id, is_new)。
 
     openid 列与 email 同步写入,既满足历史 NOT NULL/UNIQUE 约束,又让新旧库行为一致。
+    并发兜底:两个请求同时为同一新邮箱登录时,靠唯一索引 + IntegrityError 复用同一账号,
+    而不是让第二个请求 500(以前是 SELECT 后直接 INSERT,存在 check-then-insert 竞态)。
     """
     row = query_one("SELECT user_id, nickname FROM users WHERE email = ?", (email,))
     if row:
         return row["user_id"], False
-    with connect() as conn:
-        cur = conn.execute(
-            "INSERT INTO users(openid, email, nickname) VALUES(?, ?, ?)",
-            (email, email, nickname_hint or "新玩家"))
-        user_id = cur.lastrowid
-        if not nickname_hint:
-            # 默认昵称带上编号,便于排行榜区分
-            conn.execute("UPDATE users SET nickname = ? WHERE user_id = ?",
-                         (f"玩家{user_id}", user_id))
-        conn.commit()
+    try:
+        with session() as conn:
+            cur = conn.execute(
+                "INSERT INTO users(openid, email, nickname) VALUES(?, ?, ?) "
+                "ON CONFLICT(email) DO NOTHING",
+                (email, email, nickname_hint or "新玩家"))
+            if cur.rowcount == 0:
+                existing = conn.execute(
+                    "SELECT user_id FROM users WHERE email = ?", (email,)).fetchone()
+                if existing:
+                    return existing["user_id"], False
+            user_id = cur.lastrowid
+            if not nickname_hint:
+                # 默认昵称带上编号,便于排行榜区分
+                conn.execute("UPDATE users SET nickname = ? WHERE user_id = ?",
+                             (f"玩家{user_id}", user_id))
+    except sqlite3.IntegrityError:
+        row = query_one("SELECT user_id FROM users WHERE email = ?", (email,))
+        if row:
+            return row["user_id"], False
+        raise
     return user_id, True
 
 
@@ -177,12 +211,17 @@ def delete_token(token):
 # ---------------- 邮箱验证码 ----------------
 
 def insert_otp(email, code_hash, ttl_seconds):
-    """写入一条验证码记录;写入前把该邮箱未消费的旧码一并作废(同一时刻只认最新一条)。"""
-    execute("UPDATE email_otps SET used = 1 WHERE email = ? AND used = 0", (email,))
-    execute(
-        "INSERT INTO email_otps(email, code_hash, expires_at) "
-        "VALUES(?, ?, datetime('now', ?))",
-        (email, code_hash, f"+{int(ttl_seconds)} seconds"))
+    """写入一条验证码记录;在**同一个事务**里把该邮箱未消费的旧码一并作废。
+
+    以前"作废旧码"与"插入新码"是两次独立提交,两个并发发码请求会互相作废:
+    A 插入的码可能被 B 顺手置为已用,用户刚收到的码立刻失效。
+    """
+    with session() as conn:
+        conn.execute("UPDATE email_otps SET used = 1 WHERE email = ? AND used = 0", (email,))
+        conn.execute(
+            "INSERT INTO email_otps(email, code_hash, expires_at) "
+            "VALUES(?, ?, datetime('now', ?))",
+            (email, code_hash, f"+{int(ttl_seconds)} seconds"))
 
 
 def latest_otp(email):
@@ -232,8 +271,23 @@ def purge_expired_otps(days=7):
 # ---------------- 谜题 ----------------
 
 def next_puzzle_id(conn):
-    row = conn.execute("SELECT MIN(puzzle_id) AS m FROM puzzles").fetchone()
-    return (row["m"] if row and row["m"] is not None else 0) - 1
+    """分配一个不会与现有题目/历史成绩撞车的负 id。
+
+    ⚠️ 必须留在 Int32 范围内:客户端 `LevelDto.id` 是 Kotlin `Int`(上限 21 亿),
+    超出会让 kotlinx-serialization 解析溢出、整个接口在客户端侧失败 ——
+    曾经用"时间戳毫秒"派生 id(≈-1.79e12),直接把每日一题打成了"离线"。
+
+    取值方式:puzzles 与 solve_records 两边的 MIN(puzzle_id) 再减一。
+    旧实现只看 puzzles.MIN:puzzles 表被清空后 id 会从 -1 重新发放,
+    而 solve_records 里的历史负 id 还在,历史成绩会张冠李戴挂到新题上。
+    """
+    row = conn.execute(
+        "SELECT MIN(lo) AS m FROM ("
+        "  SELECT MIN(puzzle_id) AS lo FROM puzzles"
+        "  UNION ALL"
+        "  SELECT MIN(puzzle_id) AS lo FROM solve_records)").fetchone()
+    smallest = row["m"] if row and row["m"] is not None else 0
+    return smallest - 1 if smallest < 0 else -1
 
 
 def insert_puzzle(conn, puzzle_id, level, source):
