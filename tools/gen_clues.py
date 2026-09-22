@@ -44,11 +44,12 @@ def butterfly():
         "...X.XX.X...", ".....XX.....")
 
 def apple():
+    # 必须与 Levels.kt 的 apple() 逐行一致(14×14 = 146 格)
     return art(
-        "......XX......", "......XX......", "......XX......", ".....XXXX.....",
-        "...XXXXXXXX...", "..XXXXXXXXXX..", ".XXXXXXXXXXXX.", "XXXXXXXXXXXXXX",
-        "XXXXXXXXXXXXXX", ".XXXXXXXXXXXX.", "..XXXXXXXXXX..", "...XXXXXXXX...",
-        "....XXXXXX....", ".....XXXX.....")
+        "......XX......", "......XX......", "...XXXXXXXX...", "..XXXXXXXXXX..",
+        ".XXXXXXXXXXXX.", "XXXXXXXXXXXXXX", "XXXXXXXXXXXXXX", "XXXXXXXXXXXXXX",
+        "XXXXXXXXXXXXXX", "XXXXXXXXXXXXXX", "XXXXXXXXXXXXXX", ".XXXXXXXXXXXX.",
+        "..XXXXXXXXXX..", "....XXXXXX....")
 
 def house():
     return art(
@@ -65,13 +66,14 @@ def fish():
         "................")
 
 def star():
+    # 必须与 Levels.kt 的 star20() 逐行一致(20×20 = 148 格)
     return art(
-        "....................", ".........XX.........", "........XXXX........",
-        ".......XXXXXX.......", "......XXXXXXXX......", ".....XXXXXXXXXX.....",
-        "....XXXXXXXXXXXX....", "XXXXXXXXXXXXXXXXXXXX", "XXXX..XXXXXXXX..XXXX",
-        "XX.....XXXXXX.....XX", "XX......XXXX......XX", "XX.....XXXXXX.....XX",
-        "..XXXXXXXXXXXXXXXX..", "...XXXX......XXXX...", "....XXX......XXX....",
-        ".....XX......XX.....", ".....XX......XX.....", "......X......X......",
+        "....................", ".........XX.........", ".........XX.........",
+        "........XXXX........", "........XXXX........", ".......XXXXXX.......",
+        ".......XXXXXX.......", "XXXXXXXXXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXXXX",
+        ".XXXXXXXXXXXXXXXXXX.", "..XXXXXXXXXXXXXXXX..", "...XXXXXXXXXXXXXX...",
+        "....XXXXXXXXXXXX....", "....XXXX....XXXX....", "....XXX......XXX....",
+        "....XX........XX....", "....XX........XX....", "....X..........X....",
         "....................", "....................")
 
 def crown():

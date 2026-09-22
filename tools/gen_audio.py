@@ -5,8 +5,8 @@
 用法: python tools/gen_audio.py
 依赖: numpy + scipy(仅重生成音效时需要,App 本身不依赖)
 
-注:游戏未实现背景音乐(见 README「体验」说明),故本脚本不生成 bgm
-(历史上生成过 bgm.wav,但从未被 App 引用,已移除)。
+注:背景音乐不由本脚本合成 —— 它是外部素材 `app/src/main/res/raw/bgm.mp3`
+(来源见 README「素材来源」),由 BackgroundMusicManager 用 MediaPlayer 循环播放。
 """
 import os
 
