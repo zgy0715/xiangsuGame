@@ -60,3 +60,21 @@ python tools/audit_buttons.py       # 输出按钮问题清单(E1~E4)
 ```
 
 两者都是**只读审计**,不改代码;结论需要人工确认后再改。
+
+## 四、报告与插图生成
+
+| 脚本 | 作用 |
+|------|------|
+| `html_to_docx.py` | 把 `docs/md/作品说明书-最终版.html` 转成 `.docx`:**不依赖 Word**(直接写 OOXML 并打包 zip),正文宋体 12pt / 行距 20pt / 首行缩进 2 字符,一级标题黑体 16pt、二级 14pt,图片自动缩放至版心 14.64cm 并嵌入 `word/media` |
+| `make_diagrams.py` | 生成报告用的示意图(Pillow 手绘 + 3 倍超采样):`usecase` 系统用例图、`arch` 系统总体架构图、`er` 数据库 E-R 图 |
+
+```powershell
+# 改完 HTML 后重新出 Word(图注位置不变,缺图会跳过而不留破图)
+python tools/html_to_docx.py --html "docs/md/作品说明书-最终版.html" --out "docs/md/作品说明书-最终版.docx" --root .
+
+python tools/make_diagrams.py --out docs/images            # 三张示意图一起出
+python tools/make_diagrams.py --only arch --out docs/images # 只出架构图
+```
+
+`make_diagrams.py` 每次会自检"文字是否超出所在图元 / 椭圆",有超宽会打印警告而不是画歪,改完文字重跑即可。
+图片尺寸按**文件头**读真实宽高(PNG/JPEG 都支持),避免把图拉变形 —— 这一点踩过坑:只解析 JPEG 时 PNG 会退化成 800×600 的默认比例。
