@@ -93,7 +93,10 @@ fun BattleHomeScreen(
     var guestNotice by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val myId = AuthManager.session?.userId ?: -1
-    val account = if (myId > 0) AppGraph.account(myId) else null
+    // 只要"已进入"(含游客)就给 AccountStore:蓝牙对战是纯离线玩法,不依赖账号,
+    // 而棋盘要靠它渲染 —— 以前写成 `myId > 0` 才给,游客进去后发车了却没有棋盘。
+    // 网络对战仍然由下面的 guestNotice 拦住(那才真的需要令牌)。
+    val account = if (AuthManager.session != null) AppGraph.account(myId) else null
 
     fun teardown() {
         session?.close()

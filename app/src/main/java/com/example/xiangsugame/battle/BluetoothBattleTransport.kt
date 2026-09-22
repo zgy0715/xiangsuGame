@@ -15,12 +15,15 @@ import com.example.xiangsugame.battle.BattleProtocol.DOWN_ROOM_STATE
 import com.example.xiangsugame.battle.BattleProtocol.FinishPayload
 import com.example.xiangsugame.battle.BattleProtocol.FinishUpPayload
 import com.example.xiangsugame.battle.BattleProtocol.HelloPayload
+import com.example.xiangsugame.battle.BattleProtocol.ProgressPayload
+import com.example.xiangsugame.battle.BattleProtocol.ProgressUpPayload
 import com.example.xiangsugame.battle.BattleProtocol.RacePlayer
 import com.example.xiangsugame.battle.BattleProtocol.RaceStartPayload
 import com.example.xiangsugame.battle.BattleProtocol.ResultEntry
 import com.example.xiangsugame.battle.BattleProtocol.ResultPayload
 import com.example.xiangsugame.battle.BattleProtocol.RoomStatePayload
 import com.example.xiangsugame.battle.BattleProtocol.UP_FINISH
+import com.example.xiangsugame.battle.BattleProtocol.UP_PROGRESS
 import com.example.xiangsugame.battle.BattleProtocol.ErrorPayload
 import com.example.xiangsugame.api.dto.toModel
 import com.example.xiangsugame.model.Level
@@ -290,6 +293,20 @@ class BluetoothBattleTransport(
                             }
                             settleIfBothDone()
                         }
+                    }
+                }
+
+                // 进度帧:网络版由服务器把上行 `progress` 转成下行广播给其他人;蓝牙没有服务器,
+                // 必须自己转 —— 以前这条落到下面的 else 被静默丢弃,表现为"连上了但对端进度条全程不动"。
+                UP_PROGRESS -> {
+                    val p = BattleProtocol.parse<ProgressUpPayload>(payload)
+                    val other = peer
+                    if (p != null && other != null) {
+                        l.onFrame(BattleProtocol.encode(DOWN_PROGRESS, ProgressPayload(
+                            userId = other.userId,
+                            filled = p.filled,
+                            elapsedMs = p.elapsedMs,
+                        )))
                     }
                 }
 

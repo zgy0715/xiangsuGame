@@ -62,7 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.xiangsugame.api.dto.toModel
-import com.example.xiangsugame.auth.AuthManager
+import com.example.xiangsugame.battle.BattleIdentity
 import com.example.xiangsugame.battle.BattlePhase
 import com.example.xiangsugame.battle.BattleRole
 import com.example.xiangsugame.battle.BattleSession
@@ -91,8 +91,10 @@ fun BluetoothBattleRoot(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val myId = AuthManager.session?.userId ?: -1
-    val myNick = AuthManager.session?.nickname ?: "玩家$myId"
+    // 身份与登录解耦:登录用户用服务端 id;游客用本机派生的负值 —— 否则两端都是 -99(或同一个账号),
+    // 系统会认为房间里只有一个人,连上了也永远等不到"对手"。详见 BattleIdentity。
+    val myId = remember { BattleIdentity.localUserId(context) }
+    val myNick = remember(myId) { BattleIdentity.localNickname(context, myId) }
     var stage by remember { mutableStateOf(BtStage.ROLE) }
     var hostRole by remember { mutableStateOf(false) }
     var session by remember { mutableStateOf<BattleSession?>(null) }
@@ -165,8 +167,19 @@ fun BluetoothBattleRoot(
             if (result[Manifest.permission.BLUETOOTH_ADVERTISE] == true &&
                 result[Manifest.permission.BLUETOOTH_CONNECT] == true
             ) discoverableLauncher.launch(discoverIntent) else permissionMsg = "需要蓝牙权限才能开启对战"
+        } else if (Build.VERSION.SDK_INT < 31) {
+            // 客机(Android 11 及以下):搜索附近设备要位置权限,没它 startDiscovery() 一条结果都不给。
+            // 可以直接用「已配对」列表绕过,所以这里只提示、不拦死。
+            if (result[Manifest.permission.ACCESS_FINE_LOCATION] == true) {
+                stage = BtStage.DEVICE_PICK
+            } else {
+                permissionMsg = "安卓 11 及以下「搜索附近设备」需要位置权限,你拒绝了。\n" +
+                    "两种做法:① 到系统设置里给本应用开启位置权限后重来;" +
+                    "② 直接去「系统设置 → 蓝牙」与主机配对,再回来在「已配对」列表里点主机连接。"
+                stage = BtStage.DEVICE_PICK
+            }
         } else {
-            // 客机:SCAN + CONNECT
+            // 客机(Android 12+):SCAN + CONNECT
             if (result[Manifest.permission.BLUETOOTH_SCAN] == true &&
                 result[Manifest.permission.BLUETOOTH_CONNECT] == true
             ) stage = BtStage.DEVICE_PICK else permissionMsg = "需要蓝牙权限才能搜索设备"
@@ -249,7 +262,8 @@ fun BluetoothBattleRoot(
                                         ),
                                     )
                                 } else {
-                                    stage = BtStage.DEVICE_PICK
+                                    // Android 11 及以下:先要位置权限,否则搜不到任何设备
+                                    permLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
                                 }
                             },
                         shape = RoundedCornerShape(20.dp),
@@ -399,11 +413,14 @@ private fun DevicePicker(
             addAction(BluetoothAdapter.ACTION_DISCOVERY_FINISHED)
             addAction(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
         }
-        // targetSdk 34+ 要求动态注册接收器显式声明导出标志(这些是系统广播,
-        // 理论上有豁免,但显式写成 NOT_EXPORTED 更稳妥,也避免将来被系统收紧时崩在这一行)。
+        // targetSdk 34+ 要求动态注册接收器显式声明导出标志。这里**必须用 EXPORTED**:
+        // 蓝牙广播由蓝牙协议栈进程(com.android.bluetooth,独立 uid)发出,而 NOT_EXPORTED 的接收器
+        // 只接收"同 uid 或 system uid"发来的广播 —— 用 NOT_EXPORTED 会一个 ACTION_FOUND、
+        // 一个配对状态变化都收不到(现象:搜不到主机、配对成功也不自动连接),且完全静默。
+        // 这三个 action 都是系统受保护广播,导出不会引入被第三方伪造的风险。
         runCatching {
             ContextCompat.registerReceiver(
-                context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED,
+                context, receiver, filter, ContextCompat.RECEIVER_EXPORTED,
             )
         }.onFailure { context.registerReceiver(receiver, filter) }  // 旧版 core 兜底
         onDispose {
@@ -440,6 +457,18 @@ private fun DevicePicker(
         ) {
             OutlinedButton(
                 onClick = {
+                    // Android 11 及以下:没有位置权限时 startDiscovery() 不抛异常、也不返回结果,
+                    // 界面会永远停在"正在搜索…"。这里先自查一次,直接给出可操作的提示。
+                    val needLocation = Build.VERSION.SDK_INT < 31 &&
+                        ContextCompat.checkSelfPermission(
+                            context, Manifest.permission.ACCESS_FINE_LOCATION,
+                        ) != PackageManager.PERMISSION_GRANTED
+                    if (needLocation) {
+                        onMessage(
+                            "搜索附近设备需要位置权限(安卓 11 及以下):请到「系统设置 → 应用 → 权限」" +
+                                "里允许位置权限;或者直接用「刷新已配对」+ 系统蓝牙里配对。")
+                        return@OutlinedButton
+                    }
                     scanning = true
                     found = emptyList()
                     runCatching {
